@@ -44,6 +44,13 @@ Raw signals: [availability](signals/availability.md) · [fixtures-odds](signals/
 | 2 | Hughes | CRY | 4.5 | Enabler mid (⚠ verify identity/nailedness — name-collision w/ a Hull "Hughes"). |
 | 3 | van Ewijk | COV | 4.0 | Deep cover (COV @ Arsenal — last resort only). |
 
+**Bench-order rule:** autosubs promote the first bench player (in this order) that keeps the
+formation legal (≥3 DEF, ≥1 FWD). Order by `P(plays) × xPts-if-plays` — so a nailed player in
+a kind fixture ranks above a nailed player in a brutal one. Diop (IPS, home v Sunderland) is
+#1 over van Ewijk (COV, away at ~82%-fav Arsenal) for exactly this reason; a defender is kept
+high because we start the minimum 3 DEF, so a DEF blank forces a DEF autosub. Method:
+[importance-ranking › bench order & autosubs](../research/team-selection/importance-ranking.md).
+
 **Captain: Haaland · Vice-captain: Bruno Fernandes.**
 
 **Spend:** GK 10.0 · DEF 25.0 · MID 36.0 · FWD 29.0 = **£100.0m**, bank £0.0.
