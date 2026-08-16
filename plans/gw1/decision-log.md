@@ -65,6 +65,18 @@ why the optimizer is advisory-only and promoted/new-signing assets were surfaced
 Confidence: HIGH (4 independent confirmations). *Lesson for post-GW: verify the premise, not
 just the picks — the tight-ship discipline caught the gaffer.*
 
+## Cross-report reconciliations (raw signals disagreed; the gaffer adjudicates here)
+
+The raw `signals/` reports are the immutable record of what each agent found — including
+where they disagree. Per the anti-fabrication norm, the conflicts are surfaced and resolved
+here rather than hidden; the raw files are left intact.
+
+| Conflict | The disagreement | Gaffer's ruling |
+|---|---|---|
+| **2026 World Cup** | [availability §1](signals/availability.md) says a 2026 FIFA World Cup happened this summer (WC-fatigue = a rotation driver); [fixtures-odds §7](signals/fixtures-odds.md) says "a summer without a major international tournament." | **availability is correct** — WC 2026 (Jun–Jul) did happen. It only *raises* rotation caution (already baked into the minutes gate); fixtures-odds' error doesn't touch its odds/fixtures output. No squad impact. |
+| **Crystal Palace manager** | [talent-style §1](signals/talent-style.md): Palace = Pierre Sage; **Glasner moved to Nott'm Forest**. [fixtures-odds §5/§7](signals/fixtures-odds.md): "Palace under Glasner" (stale). | **talent-style is correct** (Glasner→Forest; confirmed by the brief's "Yates (NFO) under Glasner" checklist item). The Everton-Palace "lowest-goal-cluster" read used to bench Hughes comes from the **odds** (O2.5 ~50%), not from who manages Palace — so the conclusion stands regardless. |
+| **Dubravka's club** | [value-ownership §2](signals/value-ownership.md) (live FPL API): Dubravka at **Spurs** (£4.0, 22.2%). [availability §5](signals/availability.md): claims he's at relegated Burnley. | **Live FPL API wins** (authoritative on club registration) → Spurs. **Immaterial** — not selected either way; both agents agree the Spurs GK slot is a trap to avoid. |
+
 ## The missing Aug-5 squad
 
 **DECISION: initial build, no phantom prior.**

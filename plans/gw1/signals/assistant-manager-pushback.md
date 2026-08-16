@@ -20,8 +20,8 @@ say so explicitly at the foot.
 - **Gaffer's call:** run £100.0 / £0.0 bank; flagged as a known tension vs the research's
   "keep ~£0.5m + ≥1 FT into GW2."
 - **My objection (partial — this is the *weakest* of the tensions):** the "~£0.5m bank"
-  rule ([squad-construction.md:124](../research/team-selection/methods/squad-construction.md),
-  [importance-ranking.md:114](../research/team-selection/importance-ranking.md)) is about
+  rule ([squad-construction.md:124](../../research/team-selection/methods/squad-construction.md),
+  [importance-ranking.md:114](../../research/team-selection/importance-ranking.md)) is about
   **price-point flexibility for the *next* transfer**. For an **initial** GW1 squad you
   make **no transfer in GW1** and you receive your GW2 FT automatically regardless of bank.
   So £0 costs *nothing in GW1* and only a marginal amount of GW2 pivot flexibility (a £0
@@ -60,7 +60,7 @@ say so explicitly at the foot.
      There is **no HIGH-nailed Arsenal attacking pick at any price.**
   2. **Saka is a differential, not template.** £9.5, **10.3% owned** ([value-ownership.md §4](value-ownership.md)).
      Not owning a 10%-EO asset is a *small* rank loss even if he hauls — the opposite of the
-     rank-risk asymmetry the GW1 rule protects against ([importance-ranking.md:43,114](../research/team-selection/importance-ranking.md)).
+     rank-risk asymmetry the GW1 rule protects against ([importance-ranking.md:43,114](../../research/team-selection/importance-ranking.md)).
   3. The Raya+Gabriel double is **not** an inefficient covariance stack: Gabriel carries
      independent set-piece goal threat + DEFCON on top of the CS, and both are the template
      convergence picks (Raya 32.3%, Gabriel 27.8% — [value-ownership.md §4](value-ownership.md)).
@@ -83,7 +83,7 @@ say so explicitly at the foot.
   **covariance concentration**: Bruno + Mbeumo + Shaw = **three** Man Utd assets funnelled
   into the **single lowest-ceiling favourable fixture of the week**, while the **highest**
   goal-env game (Man City-Bournemouth, **O2.5 68%, the highest of GW1** — [fixtures-odds.md §4 rank-1](fixtures-odds.md))
-  holds only Haaland. Same-match returns covary ([importance-ranking.md:51](../research/team-selection/importance-ranking.md));
+  holds only Haaland. Same-match returns covary ([importance-ranking.md:51](../../research/team-selection/importance-ranking.md));
   a 1-0 Utd grind sinks all three together.
 - **The alternative:** Semenyo (£8.5 MCI, **27.6%** — near-identical EO to Mbeumo's 28.4%)
   **started the Shield RW, integrated** ([availability.md §2/§4](availability.md)), and
@@ -117,8 +117,8 @@ say so explicitly at the foot.
   "volatile"](fixtures-odds.md)). His **floor** is genuinely uncertain.
 - **Why the EO argument is nonetheless decisive:** **41.6% ownership** is near-core
   template — higher than Gabriel (27.8%) or Raya (32.3%). Fading a 41.6%-EO asset in a
-  low-info opener is exactly the rank-risk the GW1 rule forbids ([importance-ranking.md:43,114](../research/team-selection/importance-ranking.md),
-  [squad-construction.md:120](../research/team-selection/methods/squad-construction.md)).
+  low-info opener is exactly the rank-risk the GW1 rule forbids ([importance-ranking.md:43,114](../../research/team-selection/importance-ranking.md),
+  [squad-construction.md:120](../../research/team-selection/methods/squad-construction.md)).
   No higher-floor ~£7.0 alternative closes a 30-point EO gap.
 - **Recommended change:** **Keep — concede**, with two caveats: (i) **do not price in his
   pen EV** (official taker is Isak — [availability.md §2](availability.md)); own him purely
@@ -151,8 +151,8 @@ say so explicitly at the foot.
 - **EV/rank rationale:** this is the single most reliable positive-EV change I have — it
   raises the *realised* autosub floor exactly where the squad is most likely to need it
   (behind MED-fitness Shaw), for **£0.0 cost** and a **+10pp EO** gain, per the bench method
-  ([importance-ranking.md:70](../research/team-selection/importance-ranking.md),
-  [squad-construction.md:38-50](../research/team-selection/methods/squad-construction.md)).
+  ([importance-ranking.md:70](../../research/team-selection/importance-ranking.md),
+  [squad-construction.md:38-50](../../research/team-selection/methods/squad-construction.md)).
 - **Confidence:** MED-HIGH.
 
 ### 5b. Hughes £4.5 starting mid — questionable nailedness + worst fixture
@@ -214,7 +214,7 @@ say so explicitly at the foot.
   (started Shield — [availability.md §2](availability.md)), **and** owns the best fixture:
   Man City v Bournemouth is GW1's #1 attacking spot, 65% win, highest goal-env, **shortest
   scorer price 1.75** ([fixtures-odds.md §4 rank-1](fixtures-odds.md)). Captaining the
-  field's premium is the textbook low-info GW1 rule ([squad-construction.md:125](../research/team-selection/methods/squad-construction.md)).
+  field's premium is the textbook low-info GW1 rule ([squad-construction.md:125](../../research/team-selection/methods/squad-construction.md)).
   VC Bruno is the correct nailed-premium fallback. There is **no defensible alternative** —
   any other armband is a pure-downside differential in a one-shot opener.
 - **Micro-note (not a change):** VC is academic since Haaland is HIGH-nailed; Bruno (Sat
@@ -229,20 +229,20 @@ say so explicitly at the foot.
   + two £4.5 (Mitchell, Shaw) — one premium + "scrubs." Meanwhile GW1's **#1 combined
   CS-and-goals game (City-Bou)** holds only Haaland. A **£6.0 Man City defender — O'Reilly
   (21.9%) or Guéhi (21.6%), both template + DEFCON + CS** ([value-ownership.md §2/§4](value-ownership.md),
-  [importance-ranking.md:44 DEFCON](../research/team-selection/importance-ranking.md)) —
+  [importance-ranking.md:44 DEFCON](../../research/team-selection/importance-ranking.md)) —
   would be the single highest-floor marginal *upgrade* available. **BUT it can't be funded
   at £100.0/£0.0 without dropping template** (Szoboszlai 41.6% / João Pedro 57.9% / CL
   25.9%), so it is **not actionable now** — it's the first move to make in GW2 if a template
   piece falls away. Flagging so the DEF thinness is a *conscious* choice, not an oversight.
 - **DEFCON floor is light.** Your cheap outfielders are mostly full-backs (Mitchell, Shaw,
-  van Ewijk) + a diffuse mid (Hughes) — little CBIT/CBIRT floor ([importance-ranking.md:44](../research/team-selection/importance-ranking.md)).
+  van Ewijk) + a diffuse mid (Hughes) — little CBIT/CBIRT floor ([importance-ranking.md:44](../../research/team-selection/importance-ranking.md)).
   The standout cheap DEFCON mid, Xhaka (SUN £5.5, ~11 DEFCON/90 — [availability.md §5](availability.md)),
   doesn't fit the budget. Accept for GW1; a DEFCON-floor holding mid is a GW2+ upgrade path.
 - **The non-premium XI is deliberately low-ceiling.** Outside Haaland + Bruno, three of your
   attacking returns sit in low-ceiling games (Mbeumo: Hull UNDER; CL: Forest UNDER; Hughes:
   Everton-Palace lowest cluster). For a **floor-first, rank-protection GW1 this is correct**
   — but own it consciously: this squad is built to *not lose rank*, not to *climb*. That is
-  the right GW1 posture ([squad-construction.md:120-121](../research/team-selection/methods/squad-construction.md)).
+  the right GW1 posture ([squad-construction.md:120-121](../../research/team-selection/methods/squad-construction.md)).
 
 ---
 
