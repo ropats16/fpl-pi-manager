@@ -32,7 +32,7 @@ Make good FPL decisions before ~38 weekly deadlines on the user's behalf, keepin
 - **Sentiment analysis: CUT.** Community sentiment tracks ownership/template, already captured precisely via effective ownership. News = structured extraction, not sentiment.
 
 ## User / season facts
-- Entry ID **2928517**, team "Magnificos" (was auto-named "Rokshi" at registration). Registered 2026-08-05.
+- Entry ID + team name live in gitignored `.env` as `FPL_ENTRY_ID` (see `.env.example`), not in the tree. Registered 2026-08-05.
 - Squad (built 2026-08-05, exactly £100.0m, £0.0 bank): Roefs, Verbruggen, Senesi, Guéhi, Diop(4.0), Mitchell, F.Kadıoğlu, B.Fernandes, Semenyo, Hughes(4.5), Tavernier, Szoboszlai, Haaland, Kusi Asare(4.5), João Pedro.
 - GW1 deadline: **Fri 2026-08-21, 17:30 UTC** (23:00 IST). Season opens Arsenal–Coventry. Transfer window closes Aug 31 (post-GW1).
 - Pi: hostname `fplpi`, user `saf`, OS Lite 64-bit, SSH from Mac working. `~/fpl/` holds scripts + `data/` + `logs/`. Nightly cron 03:30 fetch to data/snapshots (verify with `crontab -l`).
