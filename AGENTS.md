@@ -1,6 +1,6 @@
 # fpl-pi-manager
 
-Autonomous FPL manager ("gaffer") for a Raspberry Pi 4B 2GB. Plans and spec in `plans/`.
+Autonomous FPL manager ("gaffer") for a Raspberry Pi 4B 2GB. Wayfinder map + research in `plans/`; the spec is [issue #1](https://github.com/ropats16/fpl-pi-manager/issues/1); tickets are its sub-issues.
 
 ## Agent skills
 

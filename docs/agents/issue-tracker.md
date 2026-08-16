@@ -2,6 +2,13 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
+## Repo conventions (Rohit's standing preferences — apply to EVERY ticket, not just wayfinder maps)
+
+- **Type label required**: every ticket gets exactly one `wayfinder:<type>` label — `wayfinder:task`, `wayfinder:grilling`, `wayfinder:research`, or `wayfinder:prototype` — saying what the ticket is *for*. Labels exist in the repo already; create at ticket-creation time, not after.
+- **Native parent link required**: tickets cut from a spec/parent issue are linked as GitHub **sub-issues** of it (`gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>`, db id via `gh api repos/<owner>/<repo>/issues/<n> --jq .id`), in addition to a `Part of #<parent>` line in the body.
+- **Native blocking required**: blocking edges use GitHub issue dependencies (see Wayfinding operations below), in addition to the `Blocked by:` body line.
+- The spec itself lives as an issue (e.g. #1), not as a repo file.
+
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
