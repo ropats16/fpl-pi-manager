@@ -78,4 +78,4 @@ Sandbox: ~2min cap, ephemeral, 64KB file cap, network allowlist (FPL API blocked
 - Verify 2026/27 rules against official FPL page (see season rules topic).
 - Known model gaps for v2: Understat blend, odds layer, news/minutes for new signings (currently 0), Saliba+Timber injury effect on ARS defence not in FDR.
 
-Related: [2026/27 rules](../topics/fpl-2026-27-season-rules.md), [data reachability](../topics/fpl-data-source-reachability.md), [season state](../../fpl/season-state.json)
+Related: [2026/27 rules](fpl-2026-27-season-rules.md), [data reachability](fpl-data-source-reachability.md), [season state](season-state.json)

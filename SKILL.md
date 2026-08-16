@@ -5,7 +5,9 @@ description: Fetch, validate, distill, and diff Fantasy Premier League API data 
 
 # fpl-api
 
-Data layer for the FPL agent system. Spec: `agents/hyper/memory/projects/fpl-agent-system.md`.
+> **Provisional** — this is a prior-effort Claude-Code-style skill file for the data layer only. Whether skills take this form, and whether the gaffer is a single agent or gaffer + assistant sub-agents (one skill per task or not), is an open architecture decision tracked in [#9](https://github.com/ropats16/fpl-pi-manager/issues/9) (blocked by runtime lock [#7](https://github.com/ropats16/fpl-pi-manager/issues/7)). Kept and link-corrected here; do not treat its shape as settled.
+
+Data layer for the FPL agent system. Spec: `fpl-agent-system.md`.
 
 ## What it does
 - Pulls FPL's unofficial read-only API, validates it (health checks), distills the ~3 MB raw `bootstrap-static` into a compact snapshot (~100 KB).
@@ -25,6 +27,7 @@ Data layer for the FPL agent system. Spec: `agents/hyper/memory/projects/fpl-age
 2. **distill** (this runtime — the sandbox cannot reach FPL; the agent fetches raw JSON via web_fetch, stages it, then distills): `python3 fpl_api.py distill RAW.json [--out DIR]`
 3. **diff** two snapshots: `python3 fpl_api.py diff OLD.json NEW.json`
 4. **selftest** — offline sanity check of health/distill/diff logic
+5. **csv** — flatten a distilled snapshot to CSV: `python3 fpl_api.py csv SNAP.json [--out DIR]`
 
 ## Health checks (auto-flagged in every snapshot)
 - Required keys present (`elements`, `teams`, `events`)
@@ -39,4 +42,4 @@ Data layer for the FPL agent system. Spec: `agents/hyper/memory/projects/fpl-age
 
 ## Storage layout
 - Snapshots → `./fpl-data/` on the Pi (or `/mnt/data` in sandbox)
-- Season state → `agents/hyper/fpl/season-state.json`
+- Season state → `season-state.json`

@@ -3,6 +3,10 @@ data/
 fpl-data/
 *.log
 
+# python
+__pycache__/
+*.pyc
+
 # secrets — never commit
 *.token
 *.key
