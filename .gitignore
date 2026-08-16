@@ -1,0 +1,12 @@
+# data & snapshots stay local
+data/
+fpl-data/
+*.log
+
+# secrets — never commit
+*.token
+*.key
+*.pem
+.env
+*.cookie
+secrets/

@@ -1,0 +1,37 @@
+{
+  "season": "2026-27",
+  "season_start": "2026-08-21",
+  "entry_id": null,
+  "squad": null,
+  "bank": null,
+  "free_transfers": null,
+  "chips": {
+    "first_half": {
+      "wildcard": "available",
+      "free_hit": "available",
+      "triple_captain": "available",
+      "bench_boost": "available",
+      "expires": "GW19 deadline (approx 2027-01-02)"
+    },
+    "second_half": {
+      "wildcard": "available_from_GW20",
+      "free_hit": "available_from_GW20",
+      "triple_captain": "available_from_GW20",
+      "bench_boost": "available_from_GW20"
+    }
+  },
+  "objective": null,
+  "risk_mode": "balanced",
+  "preferences": {
+    "risk_appetite": "balanced",
+    "club_biases": [],
+    "notes": []
+  },
+  "price_watch": {
+    "primary_source": "livefpl.net",
+    "meta_check": "whatthef.pl",
+    "last_check": null
+  },
+  "benchmarks": ["fplreview.com", "fantasyfootballpundit.com"],
+  "history": []
+}
