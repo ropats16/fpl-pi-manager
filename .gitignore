@@ -6,6 +6,7 @@ fpl-data/
 # python
 __pycache__/
 *.pyc
+.venv/
 
 # secrets — never commit
 *.token

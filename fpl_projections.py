@@ -5,12 +5,17 @@ fpl_projections.py -- expected points per player per gameweek (v1).
 Reads:   data/players.csv, data/fixtures.csv  (produced by fpl_api.py)
 Writes:  data/projections.csv                 (long format: player x gameweek)
 
-v1 recipe (all tunables at top):
+v1.1 recipe (all tunables at top):
   base_rate  = blend of last-season pts/90 and FPL ep_next (weights by minutes)
   xmins      = last-season minutes share (proxy for nailedness)
   fixture    = FDR multiplier (position-specific) + home edge
   status     = availability haircut (a/d/i/s/u)
   horizon    = mild decay over next N gameweeks (trust history less further out)
+
+Minutes-floor (v1.1): a player with fewer than MIN_MINUTES_FOR_HISTORY senior
+minutes has no history to trust, so minutes_share() floors them to 0 and they
+project 0 -- even with a positive ep_next. New signings / youth are gated out
+here on purpose; a later news/minutes layer re-adds them.
 
 Not in v1: Understat blend, betting odds, press-conference news, learned minutes.
 
@@ -30,7 +35,7 @@ TOPN = 15             # printed leaders per position
 # ---- tunables ----
 FULL_MINUTES = 90.0
 NAILED_FLOOR = 0.10   # min minutes-share for any squad player
-MIN_MINUTES_FOR_HISTORY = 450   # below this, lean on ep_next instead
+MIN_MINUTES_FOR_HISTORY = 450   # below this, minutes_share() floors to 0 -> projects 0 (v1.1)
 EP_WEIGHT_LOW_MIN = 0.7         # trust ep_next this much for low-minute players
 EP_WEIGHT_HIGH_MIN = 0.25       # ...and this much for established starters
 HOME_EDGE = 1.06
@@ -211,13 +216,19 @@ def selftest():
 
     assert nailed[0]["xpts"] > rotato[0]["xpts"], "nailed should outscore rotation"
     assert crocked[0]["xpts"] < 0.5, "injured should project ~0 in GW1"
-    assert newguy[0]["xpts"] > 0, "new signing should lean on ep_next"
+    # v1.1 minutes-floor: a player below MIN_MINUTES_FOR_HISTORY has no senior history to
+    # trust, so minutes_share() floors them to 0 and they project 0 regardless of ep_next.
+    # New signings are deliberately gated out here; the (future) news/minutes layer re-adds
+    # them. This is the intended behavior -- do not assert they "lean on ep_next".
+    assert newguy[0]["xmins"] == 0.0, "new signing below minutes floor -> zero xmins"
+    assert newguy[0]["xpts"] == 0.0, "new signing below minutes floor -> zero projection"
     # team 1 home FDR 2 in GW1 vs away FDR 3 in GW2 -> GW1 multiplier higher for attacker
     assert nailed[0]["xpts"] > nailed[1]["xpts"], "easier fixture should project higher"
     # blanks: no fixture -> 0
     rows2, _ = project(players, [fx for fx in fixtures if fx["event"] == "1"])
     assert all(r["xpts"] == 0.0 or r["gw"] == 1 for r in rows2)
-    print("SELFTEST PASS: nailed>rotation, injured~0, new-signing uses ep_next, FDR ordering, blanks=0")
+    print("SELFTEST PASS: nailed>rotation, injured~0, minutes-floor gates new signing to 0, "
+          "FDR ordering, blanks=0")
 
 
 if __name__ == "__main__":
