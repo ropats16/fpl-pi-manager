@@ -146,6 +146,34 @@ def selftest():
     print("SELFTEST PASS: health / distill / diff all OK")
 
 
+def write_csv(rows, path):
+    if not rows:
+        print(f"skip {path} (no rows)")
+        return
+    import csv
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    print(f"wrote {path} ({len(rows)} rows)")
+
+
+def cmd_csv(snap_path, out_dir):
+    with open(snap_path) as f:
+        snap = json.load(f)
+    os.makedirs(out_dir, exist_ok=True)
+    if snap.get("kind") == "bootstrap":
+        write_csv(snap.get("players", []), os.path.join(out_dir, "players.csv"))
+        write_csv(snap.get("teams", []), os.path.join(out_dir, "teams.csv"))
+        write_csv(snap.get("events", []), os.path.join(out_dir, "events.csv"))
+        print(f"health: {snap.get('health') or 'clean'}")
+    elif snap.get("kind") == "fixtures":
+        write_csv(snap.get("fixtures", []), os.path.join(out_dir, "fixtures.csv"))
+    else:
+        print(f"unknown kind: {snap.get('kind')}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
@@ -163,6 +191,8 @@ if __name__ == "__main__":
         out = args[args.index("--out") + 1] if "--out" in args else "./fpl-data"
         with open(raw_path) as f:
             save(distill_bootstrap(json.load(f)), out, "bootstrap")
+    elif cmd == "csv":
+        cmd_csv(args[1], args[args.index("--out") + 1] if "--out" in args else "./fpl-data")
     elif cmd == "diff":
         with open(args[1]) as f:
             old = json.load(f)
