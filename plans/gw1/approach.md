@@ -26,7 +26,11 @@ in parallel over the following days.
 football/FPL analytics so it decides on fundamentals, not hypotheses. Its job
 is to *discover* the decision axes (the seed list is not a ceiling) and to find
 & recommend preferred data sources (official / tier-1 / top FPL-draft
-communities), cross-referenced. Output: a cross-linked doc in `plans/research/`.
+communities), cross-referenced. **Done (2026-08-16):** output is the
+[team-selection research wiki](../research/team-selection/index.md) — start at
+[importance-ranking](../research/team-selection/importance-ranking.md). The #25
+run's decision-log MUST cross-link the relevant wiki pages per the acceptance
+criteria.
 
 **#25 — GW1 quick selection (needs #4 + #24).** A parent **gaffer** agent
 delegates to **sub-agents by angle** — form; friendlies (checked against a
