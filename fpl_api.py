@@ -163,10 +163,18 @@ def cmd_csv(snap_path, out_dir):
         snap = json.load(f)
     os.makedirs(out_dir, exist_ok=True)
     if snap.get("kind") == "bootstrap":
+        # Enforce the collector's health checks (player-count bounds, 38 events) before
+        # the snapshot feeds projections/optimizer: refuse to emit CSVs from a bad fetch.
+        issues = snap.get("health") or []
+        if issues:
+            for i in issues:
+                print(f"HEALTH: {i}")
+            sys.exit(f"health checks failed for {snap_path} "
+                     f"({len(issues)} issue(s)) - refusing to emit CSVs")
         write_csv(snap.get("players", []), os.path.join(out_dir, "players.csv"))
         write_csv(snap.get("teams", []), os.path.join(out_dir, "teams.csv"))
         write_csv(snap.get("events", []), os.path.join(out_dir, "events.csv"))
-        print(f"health: {snap.get('health') or 'clean'}")
+        print("health: clean")
     elif snap.get("kind") == "fixtures":
         write_csv(snap.get("fixtures", []), os.path.join(out_dir, "fixtures.csv"))
     else:
