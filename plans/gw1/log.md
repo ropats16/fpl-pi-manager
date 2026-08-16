@@ -21,6 +21,13 @@ Gaffer draft ([signals/gaffer-draft.md](signals/gaffer-draft.md)) → AM challen
 adjudicated: accepted Thomas→Diop (bench autosub), Yates-starts/Hughes-bench, Shaw-pivot
 Cash→Kayode; held Mbeumo (Semenyo=GW2 pivot) and £0.0 bank.
 
+## [2026-08-17] observer-input | Rohit's four findings adjudicated
+Observer surfaced Trai Hume, Calafiori-for-Gabriel, Verbruggen, Will Hughes. Live-verified
+(Opus-4.8, tight-ship). Rulings: reject Hume (playing RW → no DEFCON floor); hold Gabriel
+(bigger set-piece threat, more nailed; Calafiori scored the Shield opener but is the value-alt
+only); hold Raya start + Palmer £4.0 backup; act on Hughes (not nailed → replace bench slot at
+deadline). Recorded in [decision-log §3b](decision-log.md#3b-observer-input-round-2026-08-17--rohits-findings-gaffer-adjudicated).
+
 ## [2026-08-16/17] deliverable | brief.md + decision-log.md
 Final squad written to [brief.md](brief.md); reasoning/weights/pushback-ledger to
 [decision-log.md](decision-log.md). Constraints verified (15 players, 2/5/5/3, max-3 MUN,

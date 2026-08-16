@@ -182,6 +182,23 @@ Full text: [assistant-manager-pushback.md](signals/assistant-manager-pushback.md
 
 ---
 
+## 3b. Observer input round (2026-08-17) — Rohit's findings, gaffer-adjudicated
+
+Rohit (observer) surfaced four candidates from his own reading. Each was researched live
+(Opus-4.8 agent, tight-ship anti-fabrication) and adjudicated. This is the observer→gaffer
+loop working as designed (Rohit intervenes only to share; the gaffer holds judgment).
+
+| Candidate | Verified finding (sourced) | Ruling | Rationale |
+|---|---|---|---|
+| **Trai Hume** (SUN DEF £4.5, 1.6% diff) | **Playing right WING, not RB** (Sunderland Echo predicted XI: Meunier RB, Hume in front three; scored v Lens from there). | **REJECT** | Winger role destroys the DEFCON floor (won't hit ≥10 CBIT) + shaky away CS at Ipswich. A defender slot needs floor; Hume is a ceiling punt. A nailed FB (Mitchell, already owned) is the better floor play. |
+| **Calafiori for Gabriel** (£5.5 vs £8.0) | Nailed; **scored the opener in Arsenal's 3-0 Community Shield win**; NOT a new signing (joined 2024). | **HOLD Gabriel** | Research confirms Gabriel has the bigger set-piece aerial goal threat + is more nailed + template (27.9%). Calafiori is the correct value-alt only if money-constrained; freeing cash for the bench is against the shared XI-value thesis. |
+| **Verbruggen** (BHA GK £4.5) | Undisputed #1, but GW1 v Villa is a ~58% BTTS game; Raya's Coventry fixture is the week's best CS. | **HOLD Raya (start) + Palmer (£4.0 backup)** | For GW1 CS, Raya > Verbruggen. A backup GK rarely autosubs, so £4.0 Palmer beats paying £4.5 — per the value-max-the-XI thesis (Rohit concurred). |
+| **Will Hughes** (CRY MID £4.5) | **NOT nailed** — absent from Palace's predicted XI (Kamada + Wharton central). | **ACT — replace** | Poor autosub cover. Swap for a confirmed-starter £4.5 mid at the deadline (bench-only, low-stakes). |
+
+Net: no XI change; one bench cleanup (Hughes). Rohit's differential/value instincts were
+sound; the live role/nailedness data is what flipped Hume and Calafiori from "interesting" to
+"hold." *Post-GW hook: did rejecting the Hume differential cost anything? Did Gabriel out-return Calafiori?*
+
 ## 4. Confidence & defer flags (what could still move the XI)
 
 - **HIGH / locked:** captaincy; two-premium spine; Arsenal CS; João Pedro; team set; prices/EO.

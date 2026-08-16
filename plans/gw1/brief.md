@@ -83,8 +83,10 @@ Low-information now; these are the only live-data re-checks that can change the 
 
 - [ ] **Shaw fitness** (MUN). If doubtful → **pivot to Kayode (BRE £4.5)**, home, HIGH-nailed
       (NOT Cash — he's in the Brighton-Villa shootout, poor CS).
-- [ ] **Hughes** (CRY) — confirm it's the nailed Palace man, not the Hull namesake; if not
-      nailed, swap for any confirmed-nailed £4.5 mid.
+- [ ] **Will Hughes** (CRY MID £4.5) — RESOLVED: it IS the Palace man (not the Hull DEF
+      namesake) but he's **NOT nailed** (absent from Palace's predicted XI under Sage). He's
+      bench cover only, so low-stakes — but **replace him** with the cheapest confirmed-starter
+      £4.5 mid off the T-15 predicted XIs (OneFPL/FFScout) to get real autosub cover.
 - [ ] **Yates** (NFO) — confirm starts under Glasner; else reshuffle the 4th XI-mid slot.
 - [ ] **Isak / Palmer / Saka / Watkins** — not owned, but confirms whether any becomes a
       late must-consider. **Gyökeres** — if he unexpectedly starts CF, revisit (still not captain).
