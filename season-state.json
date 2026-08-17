@@ -2,9 +2,163 @@
   "season": "2026-27",
   "season_start": "2026-08-21",
   "entry_id": null,
-  "squad": null,
-  "bank": null,
-  "free_transfers": null,
+  "squad": {
+    "picks": [
+      {
+        "id": 1,
+        "name": "Raya",
+        "pos": "GKP",
+        "club": "ARS",
+        "price": 6.0,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 6.0
+      },
+      {
+        "id": 2,
+        "name": "Palmer",
+        "pos": "GKP",
+        "club": "IPS",
+        "price": 4.0,
+        "starting": false,
+        "bench_order": 0,
+        "bought_for": 4.0
+      },
+      {
+        "id": 3,
+        "name": "Gabriel",
+        "pos": "DEF",
+        "club": "ARS",
+        "price": 8.0,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 8.0
+      },
+      {
+        "id": 4,
+        "name": "Mitchell",
+        "pos": "DEF",
+        "club": "CRY",
+        "price": 4.5,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 4.5
+      },
+      {
+        "id": 5,
+        "name": "Shaw",
+        "pos": "DEF",
+        "club": "MUN",
+        "price": 4.5,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 4.5
+      },
+      {
+        "id": 6,
+        "name": "Diop",
+        "pos": "DEF",
+        "club": "IPS",
+        "price": 4.0,
+        "starting": false,
+        "bench_order": 1,
+        "bought_for": 4.0
+      },
+      {
+        "id": 7,
+        "name": "van Ewijk",
+        "pos": "DEF",
+        "club": "COV",
+        "price": 4.0,
+        "starting": false,
+        "bench_order": 3,
+        "bought_for": 4.0
+      },
+      {
+        "id": 8,
+        "name": "Bruno Fernandes",
+        "pos": "MID",
+        "club": "MUN",
+        "price": 12.0,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 12.0
+      },
+      {
+        "id": 9,
+        "name": "Mbeumo",
+        "pos": "MID",
+        "club": "MUN",
+        "price": 8.0,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 8.0
+      },
+      {
+        "id": 10,
+        "name": "Szoboszlai",
+        "pos": "MID",
+        "club": "LIV",
+        "price": 7.0,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 7.0
+      },
+      {
+        "id": 11,
+        "name": "Yates",
+        "pos": "MID",
+        "club": "NFO",
+        "price": 4.5,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 4.5
+      },
+      {
+        "id": 12,
+        "name": "Hughes",
+        "pos": "MID",
+        "club": "CRY",
+        "price": 4.5,
+        "starting": false,
+        "bench_order": 2,
+        "bought_for": 4.5
+      },
+      {
+        "id": 13,
+        "name": "Haaland",
+        "pos": "FWD",
+        "club": "MCI",
+        "price": 15.5,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 15.5
+      },
+      {
+        "id": 14,
+        "name": "Joao Pedro",
+        "pos": "FWD",
+        "club": "CHE",
+        "price": 7.5,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 7.5
+      },
+      {
+        "id": 15,
+        "name": "Calvert-Lewin",
+        "pos": "FWD",
+        "club": "LEE",
+        "price": 6.0,
+        "starting": true,
+        "bench_order": null,
+        "bought_for": 6.0
+      }
+    ],
+    "value": 100.0
+  },
+  "bank": 0.0,
+  "free_transfers": 1,
   "chips": {
     "first_half": {
       "wildcard": "available",
@@ -20,7 +174,7 @@
       "bench_boost": "available_from_GW20"
     }
   },
-  "objective": null,
+  "objective": "Maximize overall rank",
   "risk_mode": "balanced",
   "preferences": {
     "risk_appetite": "balanced",
@@ -32,6 +186,33 @@
     "meta_check": "whatthef.pl",
     "last_check": null
   },
-  "benchmarks": ["fplreview.com", "fantasyfootballpundit.com"],
-  "history": []
+  "benchmarks": [
+    "fplreview.com",
+    "fantasyfootballpundit.com"
+  ],
+  "history": [
+    {
+      "ts": "2026-08-17T16:13:20Z",
+      "gw": 1,
+      "type": "init",
+      "detail": {
+        "bank": 100.0
+      }
+    },
+    {
+      "ts": "2026-08-17T16:13:20Z",
+      "gw": 1,
+      "type": "set-squad",
+      "detail": {
+        "n": 15,
+        "value": 100.0,
+        "bank": 0.0
+      }
+    }
+  ],
+  "current_gw": 1,
+  "pending_point_hits": 0,
+  "active_chip": "none",
+  "captain": 13,
+  "vice": 9
 }

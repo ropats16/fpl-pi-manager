@@ -1,0 +1,12 @@
+{
+  "id": 9999999,
+  "player_first_name": "Test",
+  "player_last_name": "Manager",
+  "name": "Test Team",
+  "started_event": 1,
+  "current_event": null,
+  "entered_events": [],
+  "last_deadline_bank": null,
+  "last_deadline_value": null,
+  "last_deadline_total_transfers": 0
+}

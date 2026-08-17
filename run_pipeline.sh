@@ -59,6 +59,7 @@ case "$mode" in
     echo "==> fpl_api";         "$PY" fpl_api.py selftest
     echo "==> fpl_projections"; "$PY" fpl_projections.py selftest
     echo "==> fpl_optimizer";   "$PY" fpl_optimizer.py selftest
+    echo "==> season_state";    "$PY" season_state.py selftest
     echo "ALL SELFTESTS PASS"
     ;;
   *)
