@@ -1,0 +1,23 @@
+{
+  "gw": 1,
+  "note": "GW1 2026-27 initial build, derived from plans/gw1/brief.md. Element ids are synthetic placeholders (real FPL ids unknown pre-season) — this is a test fixture, not a live squad.",
+  "captain": 13,
+  "vice": 9,
+  "picks": [
+    {"id": 1,  "name": "Raya",          "pos": "GKP", "club": "ARS", "price": 6.0,  "starting": true,  "bench_order": null},
+    {"id": 2,  "name": "Palmer",        "pos": "GKP", "club": "IPS", "price": 4.0,  "starting": false, "bench_order": 0},
+    {"id": 3,  "name": "Gabriel",       "pos": "DEF", "club": "ARS", "price": 8.0,  "starting": true,  "bench_order": null},
+    {"id": 4,  "name": "Mitchell",      "pos": "DEF", "club": "CRY", "price": 4.5,  "starting": true,  "bench_order": null},
+    {"id": 5,  "name": "Shaw",          "pos": "DEF", "club": "MUN", "price": 4.5,  "starting": true,  "bench_order": null},
+    {"id": 6,  "name": "Diop",          "pos": "DEF", "club": "IPS", "price": 4.0,  "starting": false, "bench_order": 1},
+    {"id": 7,  "name": "van Ewijk",     "pos": "DEF", "club": "COV", "price": 4.0,  "starting": false, "bench_order": 3},
+    {"id": 8,  "name": "Bruno Fernandes","pos": "MID", "club": "MUN", "price": 12.0, "starting": true,  "bench_order": null},
+    {"id": 9,  "name": "Mbeumo",        "pos": "MID", "club": "MUN", "price": 8.0,  "starting": true,  "bench_order": null},
+    {"id": 10, "name": "Szoboszlai",    "pos": "MID", "club": "LIV", "price": 7.0,  "starting": true,  "bench_order": null},
+    {"id": 11, "name": "Yates",         "pos": "MID", "club": "NFO", "price": 4.5,  "starting": true,  "bench_order": null},
+    {"id": 12, "name": "Hughes",        "pos": "MID", "club": "CRY", "price": 4.5,  "starting": false, "bench_order": 2},
+    {"id": 13, "name": "Haaland",       "pos": "FWD", "club": "MCI", "price": 15.5, "starting": true,  "bench_order": null},
+    {"id": 14, "name": "Joao Pedro",    "pos": "FWD", "club": "CHE", "price": 7.5,  "starting": true,  "bench_order": null},
+    {"id": 15, "name": "Calvert-Lewin", "pos": "FWD", "club": "LEE", "price": 6.0,  "starting": true,  "bench_order": null}
+  ]
+}
