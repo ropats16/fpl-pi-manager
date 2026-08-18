@@ -9,7 +9,7 @@ Grilling session 2026-08-18 ([issue #10](https://github.com/ropats16/fpl-pi-mana
 - The gaffer gets ONLY hand-written Python tools (FPL fetch, path-ACL'd read/write, optimizer run, Telegram send, gated actuator). **No shell/exec/eval tool. Ever.** Maths pipeline runs as daemon code, not model-invoked shell.
 - **Escape hatch = `propose_command`:** gaffer sends the exact command to Rohit on Telegram; runs only on explicit "yes"; executed via `systemd-run` sandbox — no network, workspace-only mount, timeout, memory cap. Rule for Rohit: never approve a command you don't understand — the justification is exactly what an injection would fake.
 - **Per-wake LLM call/token cap** in the daemon loop (injection can't spin a token-burn loop; also guards the $5/mo ceiling).
-- Knob-tuning (weights/thresholds) lives in config/markdown via tier 2/3 writes — no exec needed for routine tuning.
+- Knob-tuning (weights/thresholds) lives in gaffer-writable parameter files (markdown/JSON) behind the tier-2 gate — no exec needed for routine tuning. "Config" the *daemon* reads (allowlist, ACL, jobs) is tier 1, never model-writable.
 
 ## 2. Telegram — numeric-ID allowlist in daemon core
 
@@ -30,7 +30,7 @@ Extends #8's LoadCredential lock with the exact hardening:
 
 ## 4. Write policy — five tiers, ACL in daemon code
 
-Enforced by the write tool checking (role, path) — never by prompt. Nothing model-writable is executable or daemon-config: poisoning can bias judgment but can't alter mechanism.
+Enforced by the write tool checking (role, path) — never by prompt. Nothing model-writable is executable or daemon-read config (security machinery): poisoning can bias judgment but can't alter mechanism.
 
 | Tier | Paths | Who writes | Gate |
 |---|---|---|---|
@@ -39,6 +39,8 @@ Enforced by the write tool checking (role, path) — never by prompt. Nothing mo
 | 2 Rulebook | `GAFFER.md`, `roles/*.md`, `playbooks/` | gaffer, gated | propose → Rohit Telegram "yes" **before** write (#9 reaffirmed) |
 | 3 Diary | `memory/` + wiki | gaffer only | free, but distilled-words-only + provenance citation; auto git-commit per wake (role+wake in message); post-hoc diff review; one-command revert |
 | 4 Inbox | `reports/gwNN/` | each analyst → own file only | write-once; **untrusted forever** — read as evidence, never instructions |
+
+**Tier-3 exception (locked in #9, unchanged here):** the gaffer's *override rulebook* self-amends **without** Rohit — its gate is #9's own machinery (3 scored precedents + AM adversarial review + next-GW activation), git-committed like all tier-3 writes; the ACL gives that one path a rulebook-specific rule. The immutable core it cannot touch stays tier 1.
 
 Poisoning mitigations riding on the tiers:
 - **No verbatim persistence of untrusted content:** fetched web text lands only in tier 4 with source stamps; memory holds the gaffer's distillations. Analysts can't write to memory at all, so a poisoned fetch can't self-install.
@@ -54,7 +56,7 @@ Poisoning mitigations riding on the tiers:
 ## 5. Web fetch — allowlist with a self-extending gate
 
 - **Domain allowlist in daemon config**, seeded from the [#24 data-sources page](research/team-selection/sources/data-sources.md) (official FPL API, odds, Understat, vetted news).
-- Non-listed domain → blocked + logged; gaffer may **propose an addition** (domain + one-line why → Rohit "yes" → permanent). Scout breadth grows organically, then stabilizes.
+- Non-listed domain → blocked + logged; gaffer may **propose an addition via Telegram** (domain + one-line why → Rohit "yes" → permanent). Scout breadth grows organically, then stabilizes.
 - **GET-only** (POST *is* exfil — the system's only internet writes are Telegram-to-Rohit and the gated actuator), response-size caps, timeouts.
 - Fetched text keeps tier-4 treatment. Residual accepted: exfil-via-query-params to allowlisted sites — context holds no secrets (§3), loot is FPL chatter.
 
