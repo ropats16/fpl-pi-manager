@@ -34,8 +34,14 @@ Evidence tier: **[proven/tier-1]** — solver horizon + top-50 hit discipline.
 **Suggested weight: HIGH (largest single meta swing) — [build now, bites GW4+].**
 
 - Optimal chip **timing** is worth ~**+49 pts/season** (best case +73); best-vs-second
-  chip **choice** only ~3 pts. So the EV is almost entirely in *when*, not *which*
-  ([FF Fix — top-50 wildcards](https://www.fantasyfootballfix.com/blog-index/fpl-top-50-tips-wildcards-2025-26/)).
+  chip **choice** only ~3 pts. So the EV is almost entirely in *when*, not *which*.
+  **[tier-2/folklore — corrected 2026-08-18]:** these figures trace to a single vendor,
+  [FPL Copilot — chip strategy](https://fplcopilot.com/blog/chip-strategy-guide) (HiGHS MIP
+  over "hundreds of real squads", sample/seasons unpublished), **not** the FF Fix top-50 page
+  previously cited here — that page only shows *when* top managers played chips (1st WC modal
+  ~GW4, 2nd ~GW32: [FF Fix — top-50 wildcards](https://www.fantasyfootballfix.com/blog-index/fpl-top-50-tips-wildcards-2025-26/)).
+  The qualitative "timing ≫ choice" survives; the numbers are unreproduced
+  ([evidence](../../gaffer-architecture/raw/season-long-machinery.md)).
 - **Method:** treat chips as a scheduled plan keyed to the fixture calendar — the
   repeatable winning sequence is **Wildcard before the biggest fixture swing → Bench
   Boost on the ensuing DGW → Free Hit on the blank**. Maintain a rolling 6-GW chip plan;
