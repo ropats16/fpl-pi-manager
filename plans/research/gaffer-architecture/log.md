@@ -17,3 +17,15 @@ Append-only. `## [DATE] operation | title`. Newest at bottom.
 
 - [synthesis.md](synthesis.md): 9 converged findings, #25-run organizational evidence,
   cost shape (~$2–2.5/mo stepwise estimate), 7 open decisions for the #9 grilling.
+
+## [2026-08-18] decision | #9 grilling resolved — architecture locked
+
+- Grilling session (Rohit) resolved all 7 open decisions from [synthesis.md](synthesis.md):
+  one-boss-+-helpers; 4 analysts + Scout + AM roster; gaffer-owned season wakes;
+  weekly pre-lock AM charter; K2.5 workers / GPT-5.4 lock+AM; agent/ file tree;
+  ~25k prompt cap; supreme-but-scored judgment (5-situation override rulebook,
+  three-layer self-governance, code-locked immutable core); cadence adopted
+  (Scout 10:00 IST daily, weekly triad, monthly, on-event); objective = maximize
+  P(1st overall), staged variance, milestones as gauges. Tight-ship additions from
+  Rohit: helpers must be thorough (coverage contracts) and must never blur
+  facts (sourced) with judgments (declared). Full record: map Decisions-so-far.

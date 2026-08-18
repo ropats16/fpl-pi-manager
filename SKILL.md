@@ -5,7 +5,7 @@ description: Fetch, validate, distill, and diff Fantasy Premier League API data 
 
 # fpl-api
 
-> **Provisional** — this is a prior-effort Claude-Code-style skill file for the data layer only. Whether skills take this form, and whether the gaffer is a single agent or gaffer + assistant sub-agents (one skill per task or not), is an open architecture decision tracked in [#9](https://github.com/ropats16/fpl-pi-manager/issues/9) (blocked by runtime lock [#7](https://github.com/ropats16/fpl-pi-manager/issues/7)). Kept and link-corrected here; do not treat its shape as settled.
+> **Settled by [#9](https://github.com/ropats16/fpl-pi-manager/issues/9) (2026-08-18):** the gaffer is one decision-holding agent + stepwise assistant roles; per-task instructions live as on-demand playbooks under `agent/playbooks/` (progressive disclosure), not one monolithic skill. This file stays as the data-layer tool doc; its content migrates into the `agent/` tree when #16 builds the workspace. See the map's Decisions-so-far + [architecture research](plans/research/gaffer-architecture/index.md).
 
 Data layer for the FPL agent system. Spec: `fpl-agent-system.md`.
 
