@@ -48,3 +48,16 @@ Standards: link integrity clean, schema obeyed. Fixed the flagged items:
   in [CONVENTIONS.md](CONVENTIONS.md), distinct from the method-gate tags.
 - Aligned the top-50 MID budget figure (41%, effective) across pages; cleaned three
   link display-texts (targets were already correct).
+
+## [2026-08-18] lint | two corrections from #9 gaffer-architecture research (track B)
+
+- **Chip-timing value downgraded [tier-1] → [tier-2/folklore]** in
+  [importance-ranking.md](importance-ranking.md) and
+  [factors/meta-and-timing.md](factors/meta-and-timing.md): the "~+49 pts timing / ~3 pts
+  choice" figures trace to FPL Copilot's vendor blog (method unpublished), not the FF Fix
+  top-50 page previously cited (that page has no such figure). Qualitative "timing ≫ choice"
+  survives. Evidence: [gaffer-architecture raw](../gaffer-architecture/raw/season-long-machinery.md).
+- **arXiv 2505.02170 mis-cited as multi-period MILP** in
+  [importance-ranking.md](importance-ranking.md): the paper is single-GW (no transfers, no
+  −4, no chips; "special and one-time cards are not taken into account"). Kept as leak-free
+  estimator baseline; multi-period cites are now sertalpbilal solver + Matthews AAAI'12.
