@@ -33,7 +33,7 @@ A **build-ready blueprint** for the autonomous FPL gaffer on the Pi 4B (2GB): ev
 
 Fog (can't phrase sharply yet — everything sharp is now a ticket on the tracker):
 
-- **Phase 2 — gaffer visualizer front-end**: pitch board with team, gaffer avatar center, background agents at desks (Rohit's reference image). Waits on single-vs-multi decision + Rohit walking through the concept; likely a /prototype ticket then.
+- **Phase 2 — gaffer visualizer front-end**: pitch board with team, gaffer avatar center, background agents at desks (Rohit's reference image). Single-vs-multi resolved by #9 (2026-08-18) — there IS a multi-role roster to visualize (gaffer + 4 analysts + Scout + AM at desks); now waits only on Rohit walking through the concept; likely a /prototype ticket then.
 - **Phase 3 — web playable football game** (shareable, play vs others): waits on landscape research; likely its own wayfinder effort after this map closes.
 - Learning loop (post-GW review grading, learnings log feeding prompts/skills).
 - **Wiring #24 + #25 into the real gaffer** — the [#24 research wiki](research/team-selection/index.md) is the gaffer's standing *briefing*; the [#25 decision-log](gw1/decision-log.md) format is the *learning-loop training record* (per-GW emit); the [optimizer-as-one-voice / tight-ship anti-fabrication / observer-pushback](gw1/approach.md) patterns are reusable behaviors. *(The 2026-08-17 fresh-discovery caveat was satisfied by #9's 3-track research pass, 2026-08-18; the Scout role fog was resolved by #9 — distinct daily role. Wiring itself is #16/#12 build work.)*

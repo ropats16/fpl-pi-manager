@@ -1,8 +1,11 @@
 # plans/research/gaffer-architecture — content catalog
 
 Research for [#9 Decision: gaffer architecture](https://github.com/ropats16/fpl-pi-manager/issues/9).
-Karpathy-wiki convention ([CONVENTIONS](../team-selection/CONVENTIONS.md)): immutable `raw/`
-agent reports; synthesized pages at top level; `log.md` append-only. Fresh pass beyond
+Karpathy-wiki convention ([CONVENTIONS](../team-selection/CONVENTIONS.md), borrowed from the
+team-selection wiki pending a shared schema doc): immutable `raw/` agent reports; synthesized
+pages at top level; `log.md` append-only. Caveat: each raw defines its own evidence-tier
+vocabulary in its header (e.g. track A's `[tier-1]` admits vendor eng-blogs; track B uses
+`[proven-as-implemented]`) — read a raw's tiers by its own header, not CONVENTIONS' stricter table. Fresh pass beyond
 #24/#25 per the map's fresh-discovery mandate. All raws produced by Claude Opus 4.8
 orchestrators with Opus 4.8 leaf agents, tight-ship anti-fabrication rules.
 

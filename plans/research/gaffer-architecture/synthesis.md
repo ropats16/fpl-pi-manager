@@ -69,8 +69,8 @@ Raws: [agent-org-design](raw/agent-org-design.md) · [season-long-machinery](raw
 
 ## Cost shape (rough, to be locked in the grilling)
 
-Per #8: lean K2.5 wake ≈ $0.02; 7-agent fan-out per wake ≈ $7–17/mo ❌. Stepwise shape:
-daily no-op scans (~30 × $0.02 ≈ $0.6) + weekly triad with bounded fan-out (≤5 assistant
+Per #8: lean K2.5 wake ≈ $0.02; a 6-agent fan-out per wake ≈ $7–17/mo ❌. Stepwise shape:
+daily no-op scans (~30 × $0.02 ≈ $0.6) + weekly triad with bounded fan-out (4 analyst
 briefs × 4 GWs ≈ $0.3 K2.5) + gaffer synthesis & AM on GPT-5.4 weekly (~$1–1.5) + monthly
 chip/calibration (~$0.2) ≈ **$2–2.5/mo** — inside the $5 ceiling with headroom for
 deadline-day escalations. Numbers are estimates; #9's decision doc must pin them.
