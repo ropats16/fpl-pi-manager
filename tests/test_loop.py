@@ -9,10 +9,9 @@ import json
 import unittest
 
 from daemon.config import Config
-from daemon.llm import LLM, DEFAULT_BASE_URL
-from daemon.logging_setup import StructuredLogger
+from daemon.llm import DEFAULT_BASE_URL
 from daemon.loop import poll_once
-from daemon.telegram import Telegram
+from daemon.runtime import build_stack
 from tests.fakes import FakeTransport, private_message
 
 
@@ -23,11 +22,7 @@ def _cfg(allowlist):
 
 
 def _wire(fake, cfg, logbuf):
-    tg = Telegram(token=cfg.telegram_token, transport=fake)
-    llm = LLM(api_key=cfg.openrouter_key, model=cfg.model, transport=fake,
-              base_url=cfg.base_url)
-    log = StructuredLogger(stream=logbuf, secrets=cfg.secrets())
-    return tg, llm, log
+    return build_stack(cfg, fake, logbuf)
 
 
 def _events(logbuf):

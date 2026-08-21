@@ -3,8 +3,16 @@
 import unittest
 
 from daemon.http import Response
-from daemon.telegram import Telegram
+from daemon.telegram import Telegram, TelegramError
 from tests.fakes import FakeTransport, private_message
+
+
+class _OkFalseTransport:
+    def request(self, method, url, headers=None, body=None):
+        import json
+        return Response(status=409, body=json.dumps(
+            {"ok": False, "description": "Conflict: terminated by other getUpdates"}
+        ).encode("utf-8"))
 
 
 class GetUpdatesTest(unittest.TestCase):
@@ -31,6 +39,13 @@ class GetUpdatesTest(unittest.TestCase):
             updates_batches=[[edited, channel, group]]))
 
         self.assertEqual(t.get_updates(offset=0), [])
+
+    def test_raises_on_api_error_instead_of_silent_empty(self):
+        t = Telegram(token="TT", transport=_OkFalseTransport())
+
+        with self.assertRaises(TelegramError) as ctx:
+            t.get_updates(offset=0)
+        self.assertIn("Conflict", str(ctx.exception))
 
 
 class SendMessageTest(unittest.TestCase):

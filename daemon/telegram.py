@@ -11,6 +11,13 @@ import json
 API = "https://api.telegram.org"
 
 
+class TelegramError(Exception):
+    """A getUpdates/sendMessage call the API rejected (bad token, 409 conflict…).
+
+    Raised rather than swallowed so the daemon's poll loop logs it and backs off
+    — an invisible ok:false would hide a stuck daemon (auditability, #15)."""
+
+
 class Message:
     __slots__ = ("update_id", "from_id", "chat_id", "text")
 
@@ -36,7 +43,7 @@ class Telegram:
         resp = self._transport.request("GET", url)
         data = resp.json()
         if not data.get("ok"):
-            return []
+            raise TelegramError(data.get("description", "getUpdates failed"))
         return [m for m in (self._parse(u) for u in data.get("result", [])) if m]
 
     @staticmethod
