@@ -3,46 +3,78 @@ one full message->reply loop offline with every external faked (no network)."""
 
 import io
 import json
+import os
 import sys
 
 from daemon.config import Config, load_config
 from daemon.http import FakeTransport, UrllibTransport
 from daemon.llm import DEFAULT_BASE_URL
 from daemon.loop import poll_once, run
+from daemon.prompt import Assembler, estimate_tokens
 from daemon.runtime import build_stack
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def build_assembler(env=None):
+    """Wire the prompt assembler from repo-relative paths (env-overridable so the
+    Pi clone can point elsewhere). Context is assembled from these files at
+    runtime — a pull that updates the markdown applies on the next wake (#7)."""
+    env = os.environ if env is None else env
+    workspace = env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent"))
+    state = env.get("GAFFER_STATE_PATH", os.path.join(REPO_ROOT, "season-state.json"))
+    projections = env.get("GAFFER_PROJECTIONS_PATH",
+                          os.path.join(REPO_ROOT, "data", "projections.csv"))
+    return Assembler(workspace, state, projections_path=projections)
 
 
 def run_daemon(env=None, out=None):
     out = sys.stderr if out is None else out
     cfg = load_config(env)
     telegram, llm, logger = build_stack(cfg, UrllibTransport(), out)
-    run(cfg, telegram, llm, logger)
+    run(cfg, telegram, llm, logger, assembler=build_assembler(env))
     return 0
 
 
 def run_selftest(out=None):
+    """Offline demo of the #16 acceptance path: a squad question is answered from
+    an assembled, grounded prompt. The real workspace + season state feed the
+    assembler; a committed projections fixture stands in for the pipeline's
+    gitignored output so the whole loop runs with zero network."""
     out = sys.stdout if out is None else out
     cfg = Config(allowlist={42}, telegram_token="fake-token",
                  openrouter_key="fake-key", model="moonshotai/kimi-k2.5",
                  base_url=DEFAULT_BASE_URL, system_prompt="selftest")
+    assembler = Assembler(
+        os.path.join(REPO_ROOT, "agent"),
+        os.path.join(REPO_ROOT, "season-state.json"),
+        projections_path=os.path.join(REPO_ROOT, "fixtures", "projections-sample.csv"),
+        gw=1)
     update = {
         "update_id": 1,
         "message": {"message_id": 1, "from": {"id": 42},
                     "chat": {"id": 42, "type": "private"},
-                    "text": "selftest: are you alive?"},
+                    "text": "how's my team looking?"},
     }
     transport = FakeTransport(updates_batches=[[update]],
-                              llm_reply="Yes — gaffer online.")
+                              llm_reply="Haaland (C) anchors a solid XI — thin bench the one worry.")
     logbuf = io.StringIO()
     telegram, llm, logger = build_stack(cfg, transport, logbuf)
 
-    poll_once(cfg, telegram, llm, logger, offset=0)
+    poll_once(cfg, telegram, llm, logger, offset=0, assembler=assembler)
 
     events = [json.loads(l) for l in logbuf.getvalue().splitlines()]
     kinds = {e["event"] for e in events}
-    ok = {"wake", "reply"} <= kinds
+    system = transport.llm_requests[0]["messages"][0]["content"]
+    grounded = "Haaland" in system                       # a real squad fact reached the model
+    clean = not any(m in system for m in ('"picks"', "bought_for", "bench_order"))
+    bounded = estimate_tokens(system) <= 25000
+    ok = {"wake", "reply"} <= kinds and grounded and clean and bounded
+
     for e in events:
         out.write(json.dumps(e) + "\n")
+    out.write(f"assembled prompt: {estimate_tokens(system)} tokens, "
+              f"grounded={grounded}, no-raw-json={clean}, within-25k={bounded}\n")
     out.write(f"selftest: {'PASS' if ok else 'FAIL'} (events: {sorted(kinds)})\n")
     return 0 if ok else 1
 
