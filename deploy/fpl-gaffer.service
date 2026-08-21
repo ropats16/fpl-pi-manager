@@ -1,0 +1,39 @@
+[Unit]
+Description=FPL Gaffer resident daemon (Telegram long-poll + LLM wake-on-message)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gaffer
+WorkingDirectory=/opt/fpl-gaffer
+ExecStart=/usr/bin/python3 -m daemon
+
+# Crash-recovery = free: read code fresh each start, keep cycling until the
+# 15-min pull lands a fix. StartLimitIntervalSec=0 stops systemd from ever
+# giving up on a crash-loop (else a bad deploy is permanent). (#11 §5)
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+# Secrets: decrypted into a service-private tmpfs $CREDENTIALS_DIRECTORY, never
+# env, never the workspace disk. Add github-token / fpl-cookie as provisioned. (#10 §3)
+LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
+LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key
+
+# Non-secret config outside every gaffer-writable path (numeric allowlist, model).
+# Root-owned; the '-' tolerates absence during first bootstrap. (#10 §2)
+EnvironmentFile=-/etc/fpl-gaffer/gaffer.env
+
+# Hardening — defense-in-depth under the fixed tool registry. (#10 §6)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/fpl-gaffer
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

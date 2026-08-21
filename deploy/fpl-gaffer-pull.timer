@@ -1,0 +1,12 @@
+[Unit]
+Description=FPL Gaffer pull timer (on-boot + every 15 min)
+
+[Timer]
+# On-boot (crash-recovery: land any fix before the daemon settles) + every 15
+# min. A breezed PR to main is live on the Pi within ~15 min. (#11 §3/§5)
+OnBootSec=1min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

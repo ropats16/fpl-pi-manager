@@ -25,6 +25,28 @@ python3 -m venv .venv && ./.venv/bin/pip install pulp   # bundles CBC; .venv is 
 `run_pipeline.sh` prefers `./.venv/bin/python`, else falls back to `python3` (the Pi, where
 pulp is a system package: `sudo apt install -y python3-pulp coinor-cbc`).
 
+## Gaffer daemon (walking skeleton — #15)
+
+The resident agent: long-polls Telegram, answers only the numeric-ID allowlist
+(unknown sender = silent drop + log), makes one OpenRouter LLM round-trip
+(Kimi K2.5), replies. Stdlib-only (Pi-friendly, no pip). Every external is
+faked at the HTTP edge (`daemon/http.py` transport seam), so the whole
+wake→reply loop runs offline.
+
+```sh
+python3 -m daemon selftest                    # offline full message→reply loop, no network/secrets
+python3 -m unittest discover -s tests -v       # HTTP-edge harness (all seams faked)
+python3 -m daemon                              # run the daemon (needs config — see below)
+```
+
+Config on the Pi comes from systemd (encrypted creds + root-owned
+`/etc/fpl-gaffer/gaffer.env`), never the workspace — see `deploy/README.md` for
+the one-time bootstrap and supervision (systemd `Restart=always`, boot-start,
+15-min pull timer). For local dev the daemon falls back to env vars
+(`GAFFER_ALLOWLIST_USER_IDS`, `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`; see
+`.env.example`). Locked decisions: runtime #7, LLM endpoint #8, security #10,
+deploy #11.
+
 ## Season state (single source of truth)
 
 `season-state.json` is the live record of "my season" — squad, bank, free transfers, chips.
