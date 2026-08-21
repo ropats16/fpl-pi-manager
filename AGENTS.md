@@ -74,6 +74,7 @@ tenths internally to avoid float drift.
 ```sh
 python3 season_state.py init                                # entry_id from $FPL_ENTRY_ID (see .env.example)
 python3 season_state.py set-squad fixtures/squad-decision.json  # act on: initial 15-man build
+python3 season_state.py pull-squad                          # load my live FPL squad (entry_id from $FPL_ENTRY_ID)
 python3 season_state.py transfer OUT_ID IN_PLAYER.json      # sell/buy, spend an FT (or -4 hit)
 python3 season_state.py chip wildcard                       # play a chip (mark used)
 python3 season_state.py advance-gw                          # roll FT +1 (cap 5); unlock set 2 at GW20
@@ -87,7 +88,10 @@ the live source of truth. Your **entry id is never committed**: it is read from 
 (per-machine `.env`, gitignored — same var on Mac and Pi) so the committed state carries
 `entry_id: null` and the repo can go public. `init` optionally takes `--entry data/entry-*.json`
 (gitignored) for the post-GW1 deadline bank, and refuses to clobber a populated squad without
-`--force`.
+`--force`. **`pull-squad`** fetches your live 15 from `/entry/{id}/event/{gw}/picks/`, maps
+element ids → names/clubs/prices via the bootstrap, and loads them (with the real bank and
+captain/vice) — the one-step way to replace a placeholder squad with your actual team. Pick
+ids become the real FPL element ids; `--gw` defaults to the state's current gameweek.
 
 ## Agent skills
 

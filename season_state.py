@@ -9,6 +9,7 @@ a state file that was never written back - is guarded here as a tested round-tri
 Usage:
   python3 season_state.py init [--entry fixtures/entry.json] [--state season-state.json]
   python3 season_state.py set-squad DECISION.json [--state PATH]     # act on: initial build
+  python3 season_state.py pull-squad [--gw N] [--entry-id ID] [--state PATH]  # load my live FPL squad
   python3 season_state.py transfer OUT_ID IN_PLAYER.json [--free] [--state PATH]
   python3 season_state.py chip NAME [--state PATH]                   # play a chip (mark used)
   python3 season_state.py advance-gw [--state PATH]                  # roll FT (+1, cap 5)
@@ -333,6 +334,26 @@ def cmd_advance(args):
     print(f"wrote {state_path}")
 
 
+def cmd_pull_squad(args):
+    """Fetch my live 15-man squad from the FPL entry and load it into the state,
+    replacing whatever squad is there. entry_id from $FPL_ENTRY_ID or --entry-id;
+    gw from --gw or the state's current_gw. Needs network (Pi / direct)."""
+    import fpl_api
+    state_path = _opt(args, "--state", STATE_PATH)
+    entry_id = resolve_entry_id(args, None)
+    state = load_state(state_path)
+    gw = int(_opt(args, "--gw", state.get("current_gw") or 1))
+    picks = fpl_api.get(f"/entry/{entry_id}/event/{gw}/picks/")
+    bootstrap = fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))
+    decision = fpl_api.build_squad_decision(picks, bootstrap, gw)
+    set_squad(state, decision)
+    save_state(state, state_path)
+    cap = next((p["name"] for p in state["squad"]["picks"]
+                if p["id"] == state["captain"]), state["captain"])
+    print(f"pull-squad: loaded {len(decision['picks'])} picks for GW{gw} | "
+          f"bank £{state['bank']}m | value £{state['squad']['value']}m | (C) {cap}")
+
+
 def cmd_show(args):
     state = load_state(_opt(args, "--state", STATE_PATH))
     picks = state.get("squad", {}).get("picks", [])
@@ -442,7 +463,31 @@ def selftest():
     except ValueError:
         assert False, "first-half chip should be playable pre-GW20"
 
-    print("SELFTEST PASS: init / read-act-write / transfer / selling-price / chips / FT-rollover")
+    # 10. pull-squad contract: a decision built from live picks (fpl_api) loads via set_squad.
+    import fpl_api
+    types = [1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4]  # 2 GKP, 5 DEF, 5 MID, 3 FWD
+    elements = [{"id": 200 + i, "web_name": f"Real{i}", "team": (i % 5) + 1,  # <=3 per club
+                 "element_type": t, "now_cost": 45} for i, t in enumerate(types)]
+    bsnap = fpl_api.distill_bootstrap({
+        "elements": elements,
+        "teams": [{"id": t, "short_name": f"C{t}"} for t in range(1, 6)],
+        "events": [],
+    })
+    picks_payload = {
+        "picks": [{"element": 200 + i, "position": i + 1,
+                   "is_captain": i == 4, "is_vice_captain": i == 8}
+                  for i in range(15)],
+        "entry_history": {"bank": 12},
+    }
+    decision = fpl_api.build_squad_decision(picks_payload, bsnap, gw=3)
+    state = load_state(path)
+    set_squad(state, decision)
+    assert len(state["squad"]["picks"]) == 15, "live picks must load as a 15-man squad"
+    assert any(p["id"] == 214 for p in state["squad"]["picks"]), "pick ids are real element ids"
+    assert state["captain"] == 204 and state["vice"] == 208, "captain/vice are element ids"
+    assert state["bank"] == 1.2, f"bank from entry_history tenths, got {state['bank']}"
+
+    print("SELFTEST PASS: init / read-act-write / transfer / selling-price / chips / FT-rollover / pull-squad")
 
 
 if __name__ == "__main__":
@@ -458,6 +503,8 @@ if __name__ == "__main__":
             cmd_init(args)
         elif cmd == "set-squad":
             cmd_set_squad(args)
+        elif cmd == "pull-squad":
+            cmd_pull_squad(args)
         elif cmd == "transfer":
             cmd_transfer(args)
         elif cmd == "chip":

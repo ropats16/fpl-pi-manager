@@ -30,8 +30,47 @@ FIXTURE_FIELDS = ["id", "event", "team_h", "team_a", "team_h_difficulty",
                   "team_h_score", "team_a_score"]
 
 
+POS_BY_TYPE = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
+
+
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_squad_decision(picks_payload, bootstrap_snap, gw):
+    """Turn a live /entry/{id}/event/{gw}/picks/ payload + a distilled bootstrap
+    into the season_state.set_squad decision shape. Pure (no network) so it is
+    unit-testable. Pick ids are the real FPL element ids (captain/vice reference
+    them); bench_order 0..3 follows FPL positions 12..15; bank comes from the
+    event's entry_history. Note: the public picks endpoint carries no per-pick
+    purchase price, so set_squad banks the current price as bought_for."""
+    players = {p["id"]: p for p in bootstrap_snap["players"]}
+    clubs = {t["id"]: t["short_name"] for t in bootstrap_snap["teams"]}
+    picks_out, captain, vice = [], None, None
+    for pk in picks_payload["picks"]:
+        el = players.get(pk["element"])
+        if el is None:
+            raise ValueError(f"element {pk['element']} not in bootstrap (stale snapshot?)")
+        pos = pk.get("position")
+        starting = pos is not None and pos <= 11
+        picks_out.append({
+            "id": el["id"],
+            "name": el["web_name"],
+            "pos": POS_BY_TYPE[el["element_type"]],
+            "club": clubs.get(el["team"], "???"),
+            "price": round(el["now_cost"] / 10.0, 1),
+            "starting": starting,
+            "bench_order": None if starting else pos - 12,
+        })
+        if pk.get("is_captain"):
+            captain = el["id"]
+        if pk.get("is_vice_captain"):
+            vice = el["id"]
+    decision = {"gw": gw, "captain": captain, "vice": vice, "picks": picks_out}
+    bank = (picks_payload.get("entry_history") or {}).get("bank")
+    if bank is not None:
+        decision["bank"] = round(bank / 10.0, 1)
+    return decision
 
 
 def get(path, retries=2, timeout=20):
@@ -143,7 +182,37 @@ def selftest():
     snap2["players"][1]["status"] = "i"
     changes = diff_snapshots(snap, snap2)
     assert len(changes) == 2, f"expected 2 changes, got {len(changes)}"
-    print("SELFTEST PASS: health / distill / diff all OK")
+
+    # build_squad_decision: live picks + distilled bootstrap -> set_squad decision shape
+    bsnap = distill_bootstrap({
+        "elements": [
+            {"id": 10, "web_name": "Raya", "team": 1, "element_type": 1, "now_cost": 60},
+            {"id": 11, "web_name": "Gabriel", "team": 1, "element_type": 2, "now_cost": 80},
+            {"id": 12, "web_name": "Haaland", "team": 2, "element_type": 4, "now_cost": 155},
+            {"id": 13, "web_name": "Palmer", "team": 3, "element_type": 1, "now_cost": 40},
+        ],
+        "teams": [{"id": 1, "short_name": "ARS"}, {"id": 2, "short_name": "MCI"},
+                  {"id": 3, "short_name": "CHE"}],
+        "events": [],
+    })
+    picks_payload = {
+        "picks": [
+            {"element": 10, "position": 1, "is_captain": False, "is_vice_captain": False},
+            {"element": 11, "position": 2, "is_captain": False, "is_vice_captain": True},
+            {"element": 12, "position": 3, "is_captain": True, "is_vice_captain": False},
+            {"element": 13, "position": 12, "is_captain": False, "is_vice_captain": False},
+        ],
+        "entry_history": {"bank": 5},
+    }
+    dec = build_squad_decision(picks_payload, bsnap, gw=3)
+    assert dec["gw"] == 3 and dec["captain"] == 12 and dec["vice"] == 11, dec
+    assert dec["bank"] == 0.5, f"bank tenths->£m, got {dec['bank']}"
+    by_id = {p["id"]: p for p in dec["picks"]}
+    assert by_id[12] == {"id": 12, "name": "Haaland", "pos": "FWD", "club": "MCI",
+                         "price": 15.5, "starting": True, "bench_order": None}, by_id[12]
+    assert by_id[10]["club"] == "ARS" and by_id[10]["pos"] == "GKP"
+    assert by_id[13]["starting"] is False and by_id[13]["bench_order"] == 0, "pos 12 -> bench 0"
+    print("SELFTEST PASS: health / distill / diff / squad-pull all OK")
 
 
 def write_csv(rows, path):
