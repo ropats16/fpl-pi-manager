@@ -48,6 +48,22 @@ class GetUpdatesTest(unittest.TestCase):
         self.assertIn("Conflict", str(ctx.exception))
 
 
+class _ScriptedSendTransport:
+    """Records each sendMessage payload and returns ok per a scripted sequence."""
+
+    def __init__(self, ok_sequence):
+        self.ok_sequence = list(ok_sequence)
+        self.sends = []
+
+    def request(self, method, url, headers=None, body=None):
+        import json
+        payload = json.loads(body.decode("utf-8"))
+        self.sends.append(payload)
+        ok = self.ok_sequence.pop(0) if self.ok_sequence else True
+        return Response(status=200 if ok else 400, body=json.dumps(
+            {"ok": ok, "description": "Bad Request: can't parse entities"}).encode("utf-8"))
+
+
 class SendMessageTest(unittest.TestCase):
     def test_posts_chat_id_and_text(self):
         fake = FakeTransport()
@@ -56,6 +72,27 @@ class SendMessageTest(unittest.TestCase):
         t.send_message(chat_id=42, text="hello")
 
         self.assertEqual(fake.sent, [{"chat_id": 42, "text": "hello"}])
+
+    def test_sends_html_parse_mode_with_converted_markup(self):
+        tp = _ScriptedSendTransport(ok_sequence=[True])
+        Telegram(token="TT", transport=tp).send_message(chat_id=42, text="**hi**")
+
+        self.assertEqual(len(tp.sends), 1)
+        self.assertEqual(tp.sends[0]["parse_mode"], "HTML")
+        self.assertEqual(tp.sends[0]["text"], "<b>hi</b>")
+
+    def test_falls_back_to_plain_text_when_html_send_is_rejected(self):
+        tp = _ScriptedSendTransport(ok_sequence=[False, True])   # HTML 400s, plain ok
+        Telegram(token="TT", transport=tp).send_message(chat_id=42, text="**hi**")
+
+        self.assertEqual(len(tp.sends), 2)
+        self.assertNotIn("parse_mode", tp.sends[1])              # retried as plain text
+        self.assertEqual(tp.sends[1]["text"], "**hi**")          # original, unconverted
+
+    def test_raises_when_even_the_plain_fallback_fails(self):
+        tp = _ScriptedSendTransport(ok_sequence=[False, False])
+        with self.assertRaises(TelegramError):
+            Telegram(token="TT", transport=tp).send_message(chat_id=42, text="**hi**")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ messages from the 1:1 chat").
 
 import json
 
+from daemon.format import to_telegram_html
+
 API = "https://api.telegram.org"
 
 
@@ -61,7 +63,22 @@ class Telegram:
             text=msg["text"],
         )
 
-    def send_message(self, chat_id, text):
-        body = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+    def _post_message(self, chat_id, text, parse_mode=None):
+        payload = {"chat_id": chat_id, "text": text}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
-        self._transport.request("POST", self._url("sendMessage"), headers, body)
+        resp = self._transport.request("POST", self._url("sendMessage"), headers, body)
+        return resp.json()
+
+    def send_message(self, chat_id, text):
+        """Send as Telegram HTML (rendered from the model's markdown). A parse
+        error must never eat the reply, so fall back to the raw text on rejection;
+        only a failed plain send raises (so the poll loop logs it)."""
+        data = self._post_message(chat_id, to_telegram_html(text), parse_mode="HTML")
+        if data.get("ok"):
+            return
+        data = self._post_message(chat_id, text)   # plain-text fallback
+        if not data.get("ok"):
+            raise TelegramError(data.get("description", "sendMessage failed"))
