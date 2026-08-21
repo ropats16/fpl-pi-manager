@@ -108,6 +108,18 @@ class SeasonSnapshotTest(unittest.TestCase):
         snap = season_snapshot(state, {})      # must not raise on None scalars
         self.assertIn("Haaland", snap)
 
+    def test_grounds_squad_as_live_fpl_truth_over_stale_model_knowledge(self):
+        # The model's training predates this season, so it flags real transfers /
+        # promotions (Mbeumo->MUN, Joao Pedro->CHE, a promoted club) as "corrupt"
+        # data. The snapshot must assert the FPL API is the source of truth and
+        # forbid overriding it from prior-season memory. (#projections/#data-trust)
+        snap = season_snapshot(_state(), {})
+        low = snap.lower()
+        self.assertIn("source of truth", low)
+        self.assertIn("fpl api", low)
+        self.assertRegex(low, r"do not|never|don't")   # an explicit don't-flag directive
+        self.assertRegex(low, r"transfer|promot|current season|training")
+
 
 def _tmp_workspace():
     root = tempfile.mkdtemp(prefix="gaffer-ws-")

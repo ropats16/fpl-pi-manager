@@ -139,6 +139,12 @@ def season_snapshot(state, projections):
 
     lines = [
         f"## My squad — GW{gw}",
+        "> Source of truth: this squad, its clubs and prices are pulled live from "
+        "the official FPL API for the current season — newer than your training "
+        "data. Treat the clubs, promotions, and transfers below as fact; never flag "
+        "them as corrupt or wrong from prior-season memory. An unexpected club means "
+        "a real transfer, not bad data.",
+        "",
         f"Objective: {state.get('objective')} · Risk: {state.get('risk_mode')}",
         f"Bank {_money(state.get('bank'))} · Free transfers: {state.get('free_transfers')} "
         f"· Squad value {_money(squad.get('value'))}",
