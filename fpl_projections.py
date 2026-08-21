@@ -17,6 +17,12 @@ minutes has no history to trust, so minutes_share() floors them to 0 and they
 project 0 -- even with a positive ep_next. New signings / youth are gated out
 here on purpose; a later news/minutes layer re-adds them.
 
+Cold start (v1.2): at a season boundary almost nobody has crossed the minutes
+floor yet, so that gate would zero the WHOLE league. is_cold_start() detects the
+league-wide case and available players fall back to FPL's own ep_next (already
+minutes-aware) instead of projecting 0. Mid-season new-signing gating is
+unaffected, since then most of the pool is over the floor.
+
 Not in v1: Understat blend, betting odds, press-conference news, learned minutes.
 
 Usage:
@@ -38,6 +44,11 @@ NAILED_FLOOR = 0.10   # min minutes-share for any squad player
 MIN_MINUTES_FOR_HISTORY = 450   # below this, minutes_share() floors to 0 -> projects 0 (v1.1)
 EP_WEIGHT_LOW_MIN = 0.7         # trust ep_next this much for low-minute players
 EP_WEIGHT_HIGH_MIN = 0.25       # ...and this much for established starters
+# Season-boundary cold start (v1.2): when almost no one has senior minutes yet (a
+# fresh season), the minutes-share floor would gate the WHOLE league to 0. Detect
+# that league-wide and fall back to FPL's own ep_next for available players.
+COLD_START_ESTABLISHED_FRAC = 0.10   # <10% of the pool over the minutes floor => cold start
+COLD_START_NOMINAL_MINUTES = 72.0    # assumed minutes for an available starter pre-history
 HOME_EDGE = 1.06
 DECAY = 0.96          # per-GW multiplier on history-driven rate
 
@@ -82,6 +93,15 @@ def minutes_share(p):
     return max(NAILED_FLOOR, min(1.0, share))
 
 
+def is_cold_start(players):
+    """True at a season boundary: fewer than COLD_START_ESTABLISHED_FRAC of the pool
+    have crossed the minutes-history floor, so minutes can't gate nailedness yet."""
+    if not players:
+        return False
+    established = sum(1 for p in players if f(p.get("minutes")) >= MIN_MINUTES_FOR_HISTORY)
+    return established < COLD_START_ESTABLISHED_FRAC * len(players)
+
+
 def status_mult(p, gw1=False):
     st = (p.get("status") or "a").strip()
     m = STATUS_MULT.get(st, 1.0)
@@ -112,12 +132,22 @@ def project(players, fixtures):
         by_event[ev][int(fx["team_a"])].append((int(fx["team_a_difficulty"]), False))
 
     events = sorted(by_event)[:HORIZON]
+    cold = is_cold_start(players)
     rows = []
     for p in players:
         pos_id = int(p["element_type"])
         team = int(p["team"])
         rate = base_rate(p)
         mins = minutes_share(p)
+        # Cold-start fallback: no minutes to trust league-wide, so for an available
+        # player with an ep_next signal use FPL's own expected points as the per-game
+        # base (it is already minutes-aware) instead of rate*mins == 0. Injured/no-signal
+        # players fall through to rate*mins and stay ~0, as they should.
+        ep_next = f(p.get("ep_next"))
+        cold_fallback = (cold and mins == 0.0 and ep_next > 0
+                         and (p.get("status") or "a").strip() in ("a", "d"))
+        per_game_base = ep_next if cold_fallback else rate * mins
+        xmins_disp = COLD_START_NOMINAL_MINUTES if cold_fallback else mins * FULL_MINUTES
         for i, ev in enumerate(events):
             games = by_event[ev].get(team, [])
             if not games:
@@ -125,12 +155,12 @@ def project(players, fixtures):
             else:
                 xp = 0.0
                 for fdr, home in games:
-                    xp += (rate * mins * fixture_mult(pos_id, fdr, home)
+                    xp += (per_game_base * fixture_mult(pos_id, fdr, home)
                            * status_mult(p, gw1=(i == 0)) * (DECAY ** i))
             rows.append({
                 "id": p["id"], "web_name": p["web_name"], "pos": POS[pos_id],
                 "team": team, "gw": ev, "now_cost": f(p["now_cost"]) / 10.0,
-                "xmins": round(mins * FULL_MINUTES, 1),
+                "xmins": round(xmins_disp, 1),
                 "xpts": round(xp, 2),
                 "horizon_xpts": None,  # filled below
             })
@@ -227,8 +257,35 @@ def selftest():
     # blanks: no fixture -> 0
     rows2, _ = project(players, [fx for fx in fixtures if fx["event"] == "1"])
     assert all(r["xpts"] == 0.0 or r["gw"] == 1 for r in rows2)
+
+    # --- season-boundary cold start (v1.2) -------------------------------------------
+    # At season start almost nobody has accumulated MIN_MINUTES_FOR_HISTORY minutes,
+    # so minutes_share() can't gate nailedness and the WHOLE league projects 0 (the
+    # real GW1 bug). When the pool is league-wide cold, available players must fall
+    # back to FPL's own ep_next instead of zeroing out. Mid-season new-signing gating
+    # (asserted above, on an established pool) stays intact via league-wide detection.
+    cold = [
+        {"id": "10", "web_name": "FreshStarter", "element_type": "3", "team": "1",
+         "minutes": "0", "total_points": "0", "ep_next": "5.0",
+         "status": "a", "chance_of_playing_next_round": "", "now_cost": "80"},
+        {"id": "11", "web_name": "FreshCrock", "element_type": "4", "team": "1",
+         "minutes": "0", "total_points": "0", "ep_next": "4.0",
+         "status": "i", "chance_of_playing_next_round": "0", "now_cost": "90"},
+        {"id": "12", "web_name": "FreshNoSignal", "element_type": "2", "team": "2",
+         "minutes": "0", "total_points": "0", "ep_next": "0.0",
+         "status": "a", "chance_of_playing_next_round": "", "now_cost": "40"},
+    ]
+    crows, _ = project(cold, fixtures)
+    cby = {}
+    for r in crows:
+        cby.setdefault(r["web_name"], []).append(r)
+    assert cby["FreshStarter"][0]["xpts"] > 0.0, "cold start: available starter must lean on ep_next, not 0"
+    assert cby["FreshStarter"][0]["xmins"] > 0.0, "cold start: available starter needs a nominal xmins"
+    assert cby["FreshCrock"][0]["xpts"] == 0.0, "cold start: injured stays ~0 despite ep_next"
+    assert cby["FreshNoSignal"][0]["xpts"] == 0.0, "cold start: no ep_next signal -> 0"
+
     print("SELFTEST PASS: nailed>rotation, injured~0, minutes-floor gates new signing to 0, "
-          "FDR ordering, blanks=0")
+          "FDR ordering, blanks=0, cold-start ep_next fallback")
 
 
 if __name__ == "__main__":
