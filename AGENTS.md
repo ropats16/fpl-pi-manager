@@ -29,7 +29,9 @@ pulp is a system package: `sudo apt install -y python3-pulp coinor-cbc`).
 
 The resident agent: long-polls Telegram, answers only the numeric-ID allowlist
 (unknown sender = silent drop + log), makes one OpenRouter LLM round-trip
-(Kimi K2.5), replies. Stdlib-only (Pi-friendly, no pip). Every external is
+(Kimi K2.5), replies. The model's markdown reply is rendered to Telegram HTML
+(`daemon/format.py`) so **bold**/bullets/`code` display properly, with a
+plain-text fallback if a send is rejected. Stdlib-only (Pi-friendly, no pip). Every external is
 faked at the HTTP edge (`daemon/http.py` transport seam), so the whole
 wake→reply loop runs offline.
 
