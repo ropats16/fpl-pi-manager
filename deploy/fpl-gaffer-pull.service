@@ -1,0 +1,16 @@
+[Unit]
+Description=FPL Gaffer pull (main -> pi/live), outbound-only crash-recovery path
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gaffer
+WorkingDirectory=/opt/fpl-gaffer
+# Pull is outbound-only (no webhook — #10 zero inbound). The daemon never runs
+# git itself (keeps git out of the tier-1 core). Disjoint path-sets mean the
+# merge into pi/live always auto-resolves. (#11 §3)
+# pi/live carries daemon-authored commits, so this is a real (auto-resolving)
+# merge, not a fast-forward; -m avoids the editor. Runs on the pi/live branch.
+ExecStart=/usr/bin/git fetch origin
+ExecStart=/usr/bin/git merge -m "pull: main -> pi/live" origin/main
