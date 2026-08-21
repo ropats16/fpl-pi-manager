@@ -39,6 +39,21 @@ python3 -m unittest discover -s tests -v       # HTTP-edge harness (all seams fa
 python3 -m daemon                              # run the daemon (needs config — see below)
 ```
 
+### Workspace + prompt assembly (#16)
+
+The gaffer's persona and know-how live as markdown under `agent/` — `GAFFER.md`
+(persona + standing orders), `roles/*.md` (Scout, four analysts, AM), `playbooks/*.md`
+(per-task how-tos), `memory/MEMORY.md` (capped learnings index) — read fresh each
+wake so a pull applies next message. `daemon/prompt.py` assembles the system prompt
+lean index-then-fetch: persona + memory index + report index + today's playbook +
+a **distilled season snapshot** (squad/bank/FT/chips from `season-state.json`
+joined to `data/projections.csv` by normalized name — projected pts per player and
+for the XI). Raw snapshot JSON and raw API payloads **never** enter a prompt (#9/#10),
+and the assembled prompt is held under a hard ~25k-token cap, critical facts at the
+edges — both asserted at the HTTP-edge harness (`tests/test_assembly_loop.py`).
+`python3 -m daemon selftest` demonstrates the whole path offline: "how's my team
+looking?" → grounded, bounded prompt → reply.
+
 Config on the Pi comes from systemd (encrypted creds + root-owned
 `/etc/fpl-gaffer/gaffer.env`), never the workspace — see `deploy/README.md` for
 the one-time bootstrap and supervision (systemd `Restart=always`, boot-start,
