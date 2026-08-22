@@ -102,6 +102,14 @@ def _money(v):
     return f"£{v:.1f}m" if isinstance(v, (int, float)) else "£n/a"
 
 
+def _season_str(state):
+    """Display season from state's stored '2026-27' -> '2026/27'. The model has no
+    innate sense of 'when', so this concrete season is the time anchor; falls back
+    to a neutral label rather than inventing one when state omits it."""
+    s = state.get("season")
+    return s.replace("-", "/") if isinstance(s, str) and s else "the current"
+
+
 def _projection_for(pick, projections):
     return projections.get((normalize_name(pick["name"]), pick["pos"]))
 
@@ -137,13 +145,19 @@ def season_snapshot(state, projections):
                if (_projection_for(p, projections) or {}).get("xpts") is not None]
     xi_total = sum(_projection_for(p, projections)["xpts"] for p in matched)
 
+    season = _season_str(state)
+    started = state.get("season_start")
+    when = f" (it began {started})" if started else ""
     lines = [
         f"## My squad — GW{gw}",
-        "> Source of truth: this squad, its clubs and prices are pulled live from "
-        "the official FPL API for the current season — newer than your training "
-        "data. Treat the clubs, promotions, and transfers below as fact; never flag "
-        "them as corrupt or wrong from prior-season memory. An unexpected club means "
-        "a real transfer, not bad data.",
+        f"> Time anchor: it is the **{season} Premier League season, gameweek "
+        f"{gw}**{when}. You were trained before this season, so your own memory of "
+        "the calendar is out of date — anchor every judgment on this season and "
+        "gameweek, never on an earlier one. This squad, its clubs and prices are "
+        "pulled live from the official FPL API and are ground truth: treat the "
+        "clubs, promotions, and transfers below as fact, never flag them as corrupt "
+        "or wrong from prior-season memory, and never evaluate this as any earlier "
+        "season. An unexpected club means a real transfer, not bad data.",
         "",
         f"Objective: {state.get('objective')} · Risk: {state.get('risk_mode')}",
         f"Bank {_money(state.get('bank'))} · Free transfers: {state.get('free_transfers')} "
@@ -236,8 +250,9 @@ class Assembler:
 
     def _headline(self, state):
         cap = _name_by_id(state.get("squad", {}).get("picks", []), state.get("captain"))
-        return (f"GW{state.get('current_gw')} · {_money(state.get('bank'))} bank · "
-                f"{state.get('free_transfers')} FT · (C) {cap}")
+        return (f"{_season_str(state)} season · GW{state.get('current_gw')} · "
+                f"{_money(state.get('bank'))} bank · {state.get('free_transfers')} FT "
+                f"· (C) {cap}")
 
     def assemble_system_prompt(self, user_text):
         with open(self.state_path, encoding="utf-8") as f:

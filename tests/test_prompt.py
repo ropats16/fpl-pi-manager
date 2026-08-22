@@ -108,6 +108,18 @@ class SeasonSnapshotTest(unittest.TestCase):
         snap = season_snapshot(state, {})      # must not raise on None scalars
         self.assertIn("Haaland", snap)
 
+    def test_states_the_concrete_season_and_gameweek_as_a_time_anchor(self):
+        # The model has no innate sense of "when": left abstract ("current season")
+        # it backfills its training-era season (e.g. 2024/25) and rejects the live
+        # squad as corrupt. The snapshot must state the CONCRETE season + gameweek
+        # from state so any model, whatever its training cutoff, anchors on ground
+        # truth rather than its own memory of the calendar. (#data-trust / time-anchor)
+        snap = season_snapshot(_state(), {})       # state season is "2026-27", gw 1
+        self.assertIn("2026/27", snap)             # concrete season, never just "current"
+        low = snap.lower()
+        self.assertRegex(low, r"gameweek 1\b|gw\s?1\b")
+        self.assertRegex(low, r"trained before|training data|predates")  # names the cutoff gap
+
     def test_grounds_squad_as_live_fpl_truth_over_stale_model_knowledge(self):
         # The model's training predates this season, so it flags real transfers /
         # promotions (Mbeumo->MUN, Joao Pedro->CHE, a promoted club) as "corrupt"
@@ -115,7 +127,7 @@ class SeasonSnapshotTest(unittest.TestCase):
         # forbid overriding it from prior-season memory. (#projections/#data-trust)
         snap = season_snapshot(_state(), {})
         low = snap.lower()
-        self.assertIn("source of truth", low)
+        self.assertIn("ground truth", low)
         self.assertIn("fpl api", low)
         self.assertRegex(low, r"do not|never|don't")   # an explicit don't-flag directive
         self.assertRegex(low, r"transfer|promot|current season|training")
@@ -177,12 +189,16 @@ class AssemblerTest(unittest.TestCase):
         self.assertIn("Haaland", prompt)            # critical facts kept when trimming
 
     def test_trimming_drops_index_sections_but_keeps_persona_and_facts(self):
+        # Cap sized to hold the must-keep block (headline + persona + full snapshot,
+        # ~450 tokens now the snapshot carries the time anchor) while still being far
+        # under the oversized memory section, so trimming must drop the index, not the
+        # identity or facts.
         root = _tmp_workspace()
         with open(os.path.join(root, "memory", "MEMORY.md"), "w") as f:
             f.write("MEMORY-BIG " + ("lesson " * 400))     # oversized index section
-        prompt = Assembler(root, STATE, projections_path=PROJ, gw=1, cap_tokens=400) \
+        prompt = Assembler(root, STATE, projections_path=PROJ, gw=1, cap_tokens=600) \
             .assemble_system_prompt("how's my team looking?")
-        self.assertLessEqual(estimate_tokens(prompt), 400)
+        self.assertLessEqual(estimate_tokens(prompt), 600)
         self.assertIn("PERSONA-MARKER", prompt)            # identity survives trimming
         self.assertIn("Haaland", prompt)                   # facts survive trimming
         self.assertNotIn("MEMORY-BIG", prompt)             # the bloated section is dropped
