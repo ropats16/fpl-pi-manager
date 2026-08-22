@@ -59,7 +59,12 @@ looking?" → grounded, bounded prompt → reply.
 Config on the Pi comes from systemd (encrypted creds + root-owned
 `/etc/fpl-gaffer/gaffer.env`), never the workspace — see `deploy/README.md` for
 the one-time bootstrap and supervision (systemd `Restart=always`, boot-start,
-15-min pull timer). For local dev the daemon falls back to env vars
+15-min pull timer). The pull is also the deploy: `deploy/pull-reload.sh` merges
+`main`→`pi/live` and, **only if tracked `*.py` changed**, gates a
+`systemctl restart` behind the offline `daemon selftest` (a failing build never
+restarts the live gaffer) and pushes a Telegram deploy/blocked notice via
+`python3 -m daemon notify` (token-only, no LLM key). Markdown/data/squad apply
+next wake, no restart. For local dev the daemon falls back to env vars
 (`GAFFER_ALLOWLIST_USER_IDS`, `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`; see
 `.env.example`). Locked decisions: runtime #7, LLM endpoint #8, security #10,
 deploy #11.

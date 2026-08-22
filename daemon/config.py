@@ -35,6 +35,22 @@ class Config:
         return [self.telegram_token, self.openrouter_key]
 
 
+def load_notify_config(env=None):
+    """Minimal config for the `notify` push: Telegram token + allowlist only.
+    The deploy path reports a reload/blocked deploy without ever touching the LLM
+    key, so this deliberately does NOT require openrouter_key — the pull unit then
+    loads only the telegram-token credential (least privilege, #10)."""
+    env = os.environ if env is None else env
+    raw_ids = env.get("GAFFER_ALLOWLIST_USER_IDS", "").strip()
+    allowlist = {int(x) for x in raw_ids.replace(",", " ").split()}
+    telegram_token = _read_credential(env, "telegram-token", "TELEGRAM_BOT_TOKEN")
+    missing = [n for n, v in (("allowlist", allowlist),
+                              ("telegram token", telegram_token)) if not v]
+    if missing:
+        raise ValueError(f"missing required config: {', '.join(missing)}")
+    return allowlist, telegram_token
+
+
 def _read_credential(env, name, env_var):
     creds_dir = env.get("CREDENTIALS_DIRECTORY")
     if creds_dir:

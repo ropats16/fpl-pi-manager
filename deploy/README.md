@@ -43,7 +43,13 @@ sudo mkdir -p /etc/fpl-gaffer
 sudo cp /opt/fpl-gaffer/deploy/gaffer.env.example /etc/fpl-gaffer/gaffer.env
 sudo nano /etc/fpl-gaffer/gaffer.env      # set GAFFER_ALLOWLIST_USER_IDS
 
-# 6. Install + enable the two units
+# 6. Least-privilege grant: gaffer may restart ONLY its own daemon (auto-reload)
+sudo install -m 0440 -o root -g root \
+  /opt/fpl-gaffer/deploy/sudoers-fpl-gaffer /etc/sudoers.d/fpl-gaffer
+sudo visudo -cf /etc/sudoers.d/fpl-gaffer            # validate before trusting it
+
+# 7. Install + enable the units (pull-reload.sh must stay executable)
+chmod +x /opt/fpl-gaffer/deploy/pull-reload.sh
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer.service        /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-pull.service   /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-pull.timer     /etc/systemd/system/
@@ -73,10 +79,23 @@ systemctl list-timers fpl-gaffer-pull.timer
 sudo systemctl start fpl-gaffer-pull.service && journalctl -u fpl-gaffer-pull -n 20
 ```
 
-## Applying updates
+## Applying updates (self-test-gated auto-reload)
 
-Merge a PR to `main` → the pull timer lands it on `pi/live` within ~15 min.
-Markdown (persona/rulebook) applies next wake, no restart; **daemon/pipeline code
-changes need a restart** — the daemon self-exits to reload and `Restart=always`
-brings it back on the new code. Crash-recovery is therefore free: the next
-restart after a fix lands self-heals, no privileged `systemctl restart`.
+Merge a PR to `main` → within ~15 min the pull timer lands it on `pi/live` and
+`pull-reload.sh` decides what to do — **no manual SSH for routine changes**:
+
+- **Markdown / data / squad** (no `*.py` changed) → applies on the next wake, no
+  restart (the assembler reads `agent/*.md`, `season-state.json`,
+  `data/projections.csv` fresh each message, #16). The pull exits quietly.
+- **Code** (`*.py` changed) → the script runs `python3 -m daemon selftest` on the
+  freshly-pulled code first:
+  - **selftest passes** → `sudo systemctl restart fpl-gaffer` (via the narrow
+    sudoers grant) and Telegram gets `✅ Deployed — <PR/commit link>`.
+  - **selftest fails** → **no restart**; the daemon keeps running the last-good
+    version and Telegram gets `⛔ Deploy blocked — <link>` (log at
+    `/tmp/gaffer-deploy-selftest.log`). A bad merge can't take the gaffer down.
+
+So the pull path is the deploy path: a green PR reaches the *running* daemon
+hands-off, and only a self-test-clean build ever restarts it. `Restart=always`
+still covers crash-recovery independently. To force a deploy now rather than wait
+for the timer: `sudo systemctl start fpl-gaffer-pull.service`.
