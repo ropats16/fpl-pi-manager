@@ -100,7 +100,10 @@ def run_notify(args, env=None, transport=None, out=None):
             telegram.send_message(chat_id=chat_id, text=text)
             sent += 1
         except Exception as e:            # noqa: BLE001 — never fail a deploy on a notice
-            out.write(f"notify: send to {chat_id} failed: {e}\n")
+            # This path bypasses the daemon's scrubbing logger; a transport error
+            # could stringify the token-bearing URL, so scrub the token by hand.
+            detail = str(e).replace(token, "***") if token else str(e)
+            out.write(f"notify: send to {chat_id} failed: {detail}\n")
     return 0 if sent else 1
 
 

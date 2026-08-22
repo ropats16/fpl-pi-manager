@@ -35,14 +35,19 @@ class Config:
         return [self.telegram_token, self.openrouter_key]
 
 
+def _parse_allowlist(env):
+    """Numeric Telegram user IDs from GAFFER_ALLOWLIST_USER_IDS (comma/space)."""
+    raw_ids = env.get("GAFFER_ALLOWLIST_USER_IDS", "").strip()
+    return {int(x) for x in raw_ids.replace(",", " ").split()}
+
+
 def load_notify_config(env=None):
     """Minimal config for the `notify` push: Telegram token + allowlist only.
     The deploy path reports a reload/blocked deploy without ever touching the LLM
     key, so this deliberately does NOT require openrouter_key — the pull unit then
     loads only the telegram-token credential (least privilege, #10)."""
     env = os.environ if env is None else env
-    raw_ids = env.get("GAFFER_ALLOWLIST_USER_IDS", "").strip()
-    allowlist = {int(x) for x in raw_ids.replace(",", " ").split()}
+    allowlist = _parse_allowlist(env)
     telegram_token = _read_credential(env, "telegram-token", "TELEGRAM_BOT_TOKEN")
     missing = [n for n, v in (("allowlist", allowlist),
                               ("telegram token", telegram_token)) if not v]
@@ -64,8 +69,7 @@ def _read_credential(env, name, env_var):
 def load_config(env=None):
     env = os.environ if env is None else env
 
-    raw_ids = env.get("GAFFER_ALLOWLIST_USER_IDS", "").strip()
-    allowlist = {int(x) for x in raw_ids.replace(",", " ").split()}
+    allowlist = _parse_allowlist(env)
 
     telegram_token = _read_credential(env, "telegram-token", "TELEGRAM_BOT_TOKEN")
     openrouter_key = _read_credential(env, "openrouter-key", "OPENROUTER_API_KEY")
