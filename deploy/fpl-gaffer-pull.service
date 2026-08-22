@@ -1,5 +1,5 @@
 [Unit]
-Description=FPL Gaffer pull (main -> pi/live), outbound-only crash-recovery path
+Description=FPL Gaffer pull (main -> pi/live) + self-test-gated reload
 After=network-online.target
 Wants=network-online.target
 
@@ -7,10 +7,14 @@ Wants=network-online.target
 Type=oneshot
 User=gaffer
 WorkingDirectory=/opt/fpl-gaffer
-# Pull is outbound-only (no webhook — #10 zero inbound). The daemon never runs
-# git itself (keeps git out of the tier-1 core). Disjoint path-sets mean the
-# merge into pi/live always auto-resolves. (#11 §3)
-# pi/live carries daemon-authored commits, so this is a real (auto-resolving)
-# merge, not a fast-forward; -m avoids the editor. Runs on the pi/live branch.
-ExecStart=/usr/bin/git fetch origin
-ExecStart=/usr/bin/git merge -m "pull: main -> pi/live" origin/main
+# Allowlist (the deploy notice's target chats) + non-secret config.
+EnvironmentFile=-/etc/fpl-gaffer/gaffer.env
+# Telegram token for the deploy notice — same encrypted-cred mechanism as the
+# daemon, decrypted into a service-private tmpfs. The deploy path never loads the
+# LLM key (least privilege — see daemon.config.load_notify_config). (#10 §3)
+LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
+# Pull main -> pi/live, then (only if tracked *.py changed) gate a daemon restart
+# behind the offline selftest and push a Telegram deploy/blocked notice. The
+# daemon never runs git itself (git stays out of the tier-1 core, #11 §3); this
+# oneshot owns the pull and, via the narrow sudoers grant, the restart.
+ExecStart=/opt/fpl-gaffer/deploy/pull-reload.sh

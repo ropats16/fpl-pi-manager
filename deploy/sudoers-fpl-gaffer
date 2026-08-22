@@ -1,0 +1,12 @@
+# Least-privilege sudo grant for the self-test-gated auto-reload
+# (deploy/pull-reload.sh). The gaffer user may restart ONLY its own daemon — no
+# other elevated rights. Without this, a gaffer-run pull cannot cycle the system
+# unit and the reload silently no-ops.
+#
+# Install:  sudo install -m 0440 -o root -g root deploy/sudoers-fpl-gaffer \
+#               /etc/sudoers.d/fpl-gaffer
+# Validate: sudo visudo -cf /etc/sudoers.d/fpl-gaffer
+#
+# The command must match the script's `sudo -n /usr/bin/systemctl restart ...`
+# exactly (full path, exact unit) so the grant stays narrow.
+gaffer ALL=(root) NOPASSWD: /usr/bin/systemctl restart fpl-gaffer.service

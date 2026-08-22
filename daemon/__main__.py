@@ -6,12 +6,13 @@ import json
 import os
 import sys
 
-from daemon.config import Config, load_config
+from daemon.config import Config, load_config, load_notify_config
 from daemon.http import FakeTransport, UrllibTransport
 from daemon.llm import DEFAULT_BASE_URL
 from daemon.loop import poll_once, run
 from daemon.prompt import Assembler, estimate_tokens
 from daemon.runtime import build_stack
+from daemon.telegram import Telegram
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -79,9 +80,38 @@ def run_selftest(out=None):
     return 0 if ok else 1
 
 
+def run_notify(args, env=None, transport=None, out=None):
+    """`daemon notify "<text>"` — push a one-off message to every allowlisted
+    chat. Used by the deploy path to report a reload or a blocked deploy. Reuses
+    the daemon's Telegram client (same token/allowlist config) rather than
+    re-implementing sendMessage. A send failure is logged, never raised: a deploy
+    notice must not fail the deploy."""
+    out = sys.stderr if out is None else out
+    text = args[0] if args else ""
+    if not text.strip():
+        out.write("notify: empty message, nothing sent\n")
+        return 2
+    allowlist, token = load_notify_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram = Telegram(token, transport)
+    sent = 0
+    for chat_id in sorted(allowlist):
+        try:
+            telegram.send_message(chat_id=chat_id, text=text)
+            sent += 1
+        except Exception as e:            # noqa: BLE001 — never fail a deploy on a notice
+            # This path bypasses the daemon's scrubbing logger; a transport error
+            # could stringify the token-bearing URL, so scrub the token by hand.
+            detail = str(e).replace(token, "***") if token else str(e)
+            out.write(f"notify: send to {chat_id} failed: {detail}\n")
+    return 0 if sent else 1
+
+
 def main(argv):
     if len(argv) > 1 and argv[1] == "selftest":
         return run_selftest()
+    if len(argv) > 1 and argv[1] == "notify":
+        return run_notify(argv[2:])
     return run_daemon()
 
 
