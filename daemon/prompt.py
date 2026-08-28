@@ -225,11 +225,16 @@ _REVIEW_KEYWORDS = ("post-gw", "post gw", "how did i do", "last gameweek", "last
 
 
 def select_playbook(user_text):
-    """Route a message to today's playbook. Deadline work -> deadline-brief;
-    post-gameweek retrospectives -> post-gw-review; everything else (the common
-    ad-hoc status question) -> squad-review, the conservative default that keeps a
-    stray message grounded rather than mis-routed."""
+    """Route a message to today's playbook. The T−2h final check -> deadline-final;
+    other deadline work -> deadline-brief; post-gameweek retrospectives ->
+    post-gw-review; everything else (the common ad-hoc status question) ->
+    squad-review, the conservative default that keeps a stray message grounded
+    rather than mis-routed. The brief wake (#18) drives the two deadline
+    playbooks via its synthetic user text ("… draft deadline brief" / "final
+    pre-deadline check …")."""
     low = (user_text or "").lower()
+    if "final" in low and "deadline" in low:
+        return "deadline-final"
     if any(k in low for k in _DEADLINE_KEYWORDS):
         return "deadline-brief"
     if any(k in low for k in _REVIEW_KEYWORDS):
@@ -241,18 +246,38 @@ def select_playbook(user_text):
 
 class Assembler:
     def __init__(self, workspace_root, state_path, projections_path=None,
-                 cap_tokens=CAP_TOKENS, gw=None):
+                 cap_tokens=CAP_TOKENS, gw=None, approval_store_path=None):
         self.ws = Workspace(workspace_root)
         self.state_path = state_path
         self.projections_path = projections_path
         self.cap_tokens = cap_tokens
         self.gw = gw
+        # When wired (#18), a live pending/approved plan is rendered as prose into
+        # the prompt so debate replies are grounded in what a `yes` would lock.
+        self.approval_store_path = approval_store_path
 
     def _headline(self, state):
         cap = _name_by_id(state.get("squad", {}).get("picks", []), state.get("captain"))
         return (f"{_season_str(state)} season · GW{state.get('current_gw')} · "
                 f"{_money(state.get('bank'))} bank · {state.get('free_transfers')} FT "
                 f"· (C) {cap}")
+
+    def _plan_section(self):
+        """(title, body) for the plan awaiting/approved, rendered as prose (never
+        raw json — repo invariant). ("", "") when nothing is pending/approved, so
+        it drops out of the optional-section list."""
+        if not self.approval_store_path:
+            return "", ""
+        try:
+            from daemon.plan import ApprovalStore, plan_prose
+            st = ApprovalStore(self.approval_store_path).load()
+            if st.pending_plan:
+                return f"## Plan awaiting approval (GW{st.gw})", plan_prose(st.pending_plan)
+            if st.approved_plan:
+                return f"## Approved plan (GW{st.gw})", plan_prose(st.approved_plan)
+        except Exception:            # noqa: BLE001 — a broken store never mutes the bot
+            pass
+        return "", ""
 
     def assemble_system_prompt(self, user_text):
         with open(self.state_path, encoding="utf-8") as f:
@@ -263,10 +288,14 @@ class Assembler:
 
         headline = self._headline(state)
         persona = self.ws.persona()
+        plan_title, plan_body = self._plan_section()
         # Index sections, highest-priority first (dropped lowest-first under budget).
+        # The plan-awaiting section sits below the playbook, above the reports
+        # index — grounding debate without displacing identity or the snapshot.
         optional = [(t, b) for t, b in (
             ("## Standing memory", self.ws.memory_index()),
             ("## Playbook", self.ws.playbook(select_playbook(user_text))),
+            (plan_title, plan_body),
             ("## Gameweek reports", self.ws.report_index()),
         ) if b]
 

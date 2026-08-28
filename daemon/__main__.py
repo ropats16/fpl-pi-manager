@@ -7,11 +7,14 @@ import os
 import sys
 
 import fpl_api
+from daemon.actuator import ManualApplyActuator
+from daemon.brief import run_brief
 from daemon.config import Config, load_config, load_notify_config
 from daemon.http import FakeTransport, UrllibTransport
 from daemon.llm import DEFAULT_BASE_URL
 from daemon.logging_setup import StructuredLogger
 from daemon.loop import poll_once, run
+from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
 from daemon.runtime import build_stack
 from daemon.telegram import Telegram
@@ -20,23 +23,35 @@ from daemon.watch import run_watch
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def build_assembler(env=None):
+def _approval_state_path(env):
+    return env.get("GAFFER_APPROVAL_STATE_PATH",
+                   os.path.join(REPO_ROOT, "data", "approval-state.json"))
+
+
+def build_assembler(env=None, approval_store_path=None):
     """Wire the prompt assembler from repo-relative paths (env-overridable so the
     Pi clone can point elsewhere). Context is assembled from these files at
-    runtime — a pull that updates the markdown applies on the next wake (#7)."""
+    runtime — a pull that updates the markdown applies on the next wake (#7).
+    When `approval_store_path` is set, a live pending/approved plan grounds
+    debate replies (#18)."""
     env = os.environ if env is None else env
     workspace = env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent"))
     state = env.get("GAFFER_STATE_PATH", os.path.join(REPO_ROOT, "season-state.json"))
     projections = env.get("GAFFER_PROJECTIONS_PATH",
                           os.path.join(REPO_ROOT, "data", "projections.csv"))
-    return Assembler(workspace, state, projections_path=projections)
+    return Assembler(workspace, state, projections_path=projections,
+                     approval_store_path=approval_store_path)
 
 
 def run_daemon(env=None, out=None):
     out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
     cfg = load_config(env)
     telegram, llm, logger = build_stack(cfg, UrllibTransport(), out)
-    run(cfg, telegram, llm, logger, assembler=build_assembler(env))
+    approval_path = _approval_state_path(env)
+    approvals = ApprovalGate(ApprovalStore(approval_path))
+    assembler = build_assembler(env, approval_store_path=approval_path)
+    run(cfg, telegram, llm, logger, assembler=assembler, approvals=approvals)
     return 0
 
 
@@ -136,6 +151,40 @@ def run_watch_cmd(env=None, transport=None, out=None, fetch=None):
         telegram=telegram, allowlist=allowlist, logger=logger)
 
 
+def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
+    """`daemon brief` — the hourly deadline-brief wake (#18). Unlike the watch,
+    the brief thinks: it loads the full config (the LLM key), assembles a grounded
+    prompt, and on a draft/final tick spends one OpenRouter round-trip. Outside a
+    window it is a cheap clock check that sends nothing. The approval state lives
+    in data/approval-state.json (gitignored, shared with the reply loop)."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram, llm, logger = build_stack(cfg, transport, out)
+
+    approval_path = _approval_state_path(env)
+    reports_dir = env.get("GAFFER_REPORTS_DIR",
+                          os.path.join(REPO_ROOT, "agent", "reports"))
+    state_path = env.get("GAFFER_STATE_PATH",
+                         os.path.join(REPO_ROOT, "season-state.json"))
+    store = ApprovalStore(approval_path)
+    actuator = ManualApplyActuator()
+
+    def assembler_factory():
+        return build_assembler(env, approval_store_path=approval_path)
+
+    if fetch is None:
+        def fetch():
+            return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))["events"]
+
+    return run_brief(fetch=fetch, llm_complete=llm.complete,
+                     assembler_factory=assembler_factory, store=store,
+                     telegram=telegram, allowlist=cfg.allowlist, logger=logger,
+                     actuator=actuator, state_path=state_path,
+                     reports_dir=reports_dir, now=now)
+
+
 def main(argv):
     if len(argv) > 1 and argv[1] == "selftest":
         return run_selftest()
@@ -143,6 +192,8 @@ def main(argv):
         return run_notify(argv[2:])
     if len(argv) > 1 and argv[1] == "watch":
         return run_watch_cmd()
+    if len(argv) > 1 and argv[1] == "brief":
+        return run_brief_cmd()
     return run_daemon()
 
 

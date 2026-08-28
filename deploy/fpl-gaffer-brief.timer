@@ -1,0 +1,14 @@
+[Unit]
+Description=FPL Gaffer deadline-brief timer (hourly clock check)
+
+[Timer]
+# Hourly, at :20 past the hour. The wake itself is a cheap clock check against
+# the next FPL deadline (#18); it only opens the LLM path inside the draft
+# (IST-evening / <24h) and final (T-2h) windows, and acts at T-30m. Hourly
+# granularity is what lets the T-2h final and T-30m act windows fire on time.
+OnCalendar=*-*-* *:20:00
+# Fire on next boot if the Pi slept through a scheduled wake — never miss a lock.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

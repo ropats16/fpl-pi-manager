@@ -3,17 +3,28 @@
 The allowlist check is the first gate: an unknown sender's text never reaches
 the model and never draws a reply (replying confirms a live bot — #10 §2).
 Every wake, prompt and reply is logged as one structured record for audit.
+
+When an `approvals` gate is wired (#18), the approve/stop tokens are matched in
+DAEMON CODE before the LLM is ever consulted: an exact `yes` while a plan is
+AWAITING flips the write gate with no model call, and an iterate (a reply that
+carries a fresh ```plan``` block) carry-voids the snapshot so a new `yes` is
+required. Everything else — `yes but…`, `why?`, plain chat — routes to the model
+as debate, grounded on the pending/approved plan via the assembler.
 """
 
 import time
 
+from daemon.plan import is_approval, is_stop, parse_plan, plan_summary
 
-def process_message(msg, cfg, telegram, llm, logger, assembler=None):
+
+def process_message(msg, cfg, telegram, llm, logger, assembler=None,
+                    approvals=None):
     """Handle one incoming Telegram message. Returns True if a reply was sent.
 
     When an `assembler` is wired, the system prompt is assembled fresh from the
     workspace + distilled season facts (#16); otherwise the static system prompt
-    is used (the #15 walking-skeleton path)."""
+    is used (the #15 walking-skeleton path). When an `approvals` gate is wired,
+    the deterministic approve/stop path runs before any LLM call (#18)."""
     if msg.from_id not in cfg.allowlist:
         # Silent drop, no reply — replying confirms a live bot to a stranger.
         logger.event("drop", reason="not_allowlisted",
@@ -23,6 +34,31 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None):
     logger.event("wake", from_id=msg.from_id, chat_id=msg.chat_id,
                  update_id=msg.update_id, text=msg.text)
 
+    st = approvals.store.load() if approvals is not None else None
+
+    # --- deterministic approval gate (#18) — daemon code, never the model ------
+    if st is not None:
+        if is_approval(msg.text):
+            if st.phase == "awaiting_approval" and st.pending_plan:
+                approvals.store.approve()
+                logger.event("approve", gw=st.gw)
+                receipt = (f"✅ GW{st.gw} plan approved — locking at T−30m unless "
+                           f"news voids it. {plan_summary(st.pending_plan)}")
+                telegram.send_message(msg.chat_id, receipt)
+                return True
+            # A bare `yes` with nothing pending is just chat -> fall through.
+        elif is_stop(msg.text) and st.phase == "locked":
+            # STOP holds the lock: the approved plan reverts to pending, awaiting
+            # a fresh yes (§3⑤ opt-out). No model call.
+            approvals.store.pending_plan = st.approved_plan
+            approvals.store.approved_plan = None
+            approvals.store.phase = "awaiting_approval"
+            approvals.store.save()
+            logger.event("stop", gw=st.gw)
+            telegram.send_message(msg.chat_id, "⏸ hold — awaiting fresh yes")
+            return True
+
+    # --- debate / iterate / chat -> the model ---------------------------------
     messages = None
     if assembler is not None:
         try:
@@ -39,17 +75,29 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None):
         ]
     reply = llm.complete(messages)
 
+    send_text = reply
+    # An iterate is a debate reply that re-emits a full plan block: it becomes
+    # the new pending snapshot (fresh yes required) and the machine block is
+    # stripped before Telegram (§3② — the block never reaches the human).
+    if st is not None and st.phase in ("awaiting_approval", "approved", "locked"):
+        plan, stripped = parse_plan(reply)
+        if plan is not None:
+            approvals.store.void_carry(plan)
+            logger.event("iterate", gw=st.gw)
+            send_text = stripped
+
     logger.event("reply", from_id=msg.from_id, chat_id=msg.chat_id,
-                 prompt=msg.text, reply=reply)
-    telegram.send_message(msg.chat_id, reply)
+                 prompt=msg.text, reply=send_text)
+    telegram.send_message(msg.chat_id, send_text)
     return True
 
 
-def poll_once(cfg, telegram, llm, logger, offset, assembler=None):
+def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None):
     """One long-poll cycle. Returns the next offset to request."""
     for msg in telegram.get_updates(offset):
         try:
-            process_message(msg, cfg, telegram, llm, logger, assembler=assembler)
+            process_message(msg, cfg, telegram, llm, logger, assembler=assembler,
+                            approvals=approvals)
         except Exception as e:  # one bad message must not kill the daemon
             logger.event("error", from_id=getattr(msg, "from_id", None),
                          error=type(e).__name__, detail=str(e))
@@ -58,13 +106,14 @@ def poll_once(cfg, telegram, llm, logger, offset, assembler=None):
 
 
 def run(cfg, telegram, llm, logger, should_continue=lambda: True, idle_sleep=1.0,
-        assembler=None):
+        assembler=None, approvals=None):
     """Resident loop: long-poll Telegram forever, waking on each message."""
     offset = 0
     logger.event("startup", model=cfg.model, allowlist_size=len(cfg.allowlist))
     while should_continue():
         try:
-            offset = poll_once(cfg, telegram, llm, logger, offset, assembler=assembler)
+            offset = poll_once(cfg, telegram, llm, logger, offset,
+                               assembler=assembler, approvals=approvals)
         except Exception as e:  # network blip — log and keep cycling
             logger.event("poll_error", error=type(e).__name__, detail=str(e))
             time.sleep(idle_sleep)
