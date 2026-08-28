@@ -47,10 +47,12 @@ def _read(path):
         return f.read()
 
 
-def load_watch_targets(state_path, shortlist_path):
+def load_watch_targets(state_path, shortlist_path, logger=None):
     """(squad element ids, shortlisted lowercased names). A missing or malformed
-    file yields an empty set for that source rather than raising: a broken
-    shortlist must degrade the watch to squad-only, never kill the wake."""
+    file yields an empty set for that source rather than raising — a broken
+    shortlist must degrade the watch to squad-only, never kill the wake — but
+    the degradation is logged: a blind squad watch that looks like a quiet day
+    would silently void the "alert on my players" guarantee (#17)."""
     ids = set()
     try:
         state = json.loads(_read(state_path))
@@ -58,12 +60,18 @@ def load_watch_targets(state_path, shortlist_path):
             pid = pick.get("id")
             if isinstance(pid, int):
                 ids.add(pid)
-    except Exception:                    # noqa: BLE001 — see docstring
+    except Exception as e:               # noqa: BLE001 — see docstring
         ids = set()
+        if logger:
+            logger.event("watch_targets_degraded", source="state",
+                         error=type(e).__name__, detail=str(e))
     try:
         names = parse_shortlist(_read(shortlist_path))
-    except Exception:                    # noqa: BLE001 — see docstring
+    except Exception as e:               # noqa: BLE001 — see docstring
         names = set()
+        if logger:
+            logger.event("watch_targets_degraded", source="shortlist",
+                         error=type(e).__name__, detail=str(e))
     return ids, names
 
 
@@ -132,17 +140,21 @@ def run_watch(fetch, state_path, shortlist_path, baseline_path, telegram,
     with open(baseline_path, "r") as f:
         baseline = json.load(f)
     changes = fpl_api.diff_snapshots(baseline, snap)
-    ids, names = load_watch_targets(state_path, shortlist_path)
-    mine = relevant_changes(changes, ids, names)
+    ids, names = load_watch_targets(state_path, shortlist_path, logger=logger)
+    relevant = relevant_changes(changes, ids, names)
 
-    if not mine:
-        logger.event("watch_quiet", total_changes=len(changes), relevant=0)
+    # Target counts on every diff wake: "quiet because nothing moved" and
+    # "quiet because the watch is blind" must be distinguishable in the journal.
+    targets = {"squad_ids": len(ids), "shortlist": len(names)}
+    if not relevant:
+        logger.event("watch_quiet", total_changes=len(changes), relevant=0,
+                     **targets)
         _write_baseline(baseline_path, snap)
         return 0
 
-    text = format_alert(mine)
-    logger.event("watch_alert", relevant=len(mine), total_changes=len(changes),
-                 changes=mine)
+    text = format_alert(relevant)
+    logger.event("watch_alert", relevant=len(relevant),
+                 total_changes=len(changes), changes=relevant, **targets)
     for chat_id in sorted(allowlist):
         try:
             telegram.send_message(chat_id=chat_id, text=text)

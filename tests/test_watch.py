@@ -247,6 +247,50 @@ class StructuredLogTest(WatchHarness):
         self.assertEqual(rc2, 0)
         self.assertEqual(len(tg2.sent), 1)
 
+    def test_quiet_and_alert_wakes_log_the_target_counts(self):
+        # The "alert only for my players" guarantee is only auditable if every
+        # diff wake records how many targets it was actually watching.
+        self.seed()
+        rc, _ = self.watch(lambda: _snap(BASE_PLAYERS))
+        quiet = next(e for e in _events(self.log) if e["event"] == "watch_quiet")
+        self.assertEqual(quiet["squad_ids"], 1)
+        self.assertEqual(quiet["shortlist"], 1)
+
+        rc, _ = self.watch(lambda: _snap([_player(1, "Haaland", 156),
+                                          _player(2, "Saka", 100),
+                                          _player(3, "Nobody", 45)]))
+        alert = next(e for e in _events(self.log) if e["event"] == "watch_alert")
+        self.assertEqual(alert["squad_ids"], 1)
+        self.assertEqual(alert["shortlist"], 1)
+
+    def test_broken_state_file_degrades_loudly_not_silently(self):
+        # A corrupt season-state must not silently blind the squad watch: the
+        # wake still completes (shortlist-only), but the degradation is logged.
+        with open(self.state_path, "w") as f:
+            f.write("{not json")
+        self.seed()
+        rc, tg = self.watch(lambda: _snap([_player(1, "Haaland", 156),
+                                           _player(2, "Saka", 101),
+                                           _player(3, "Nobody", 45)]))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(tg.sent), 1)                    # Saka still alerts
+        self.assertNotIn("Haaland", tg.sent[0]["text"])      # squad watch is blind
+        ev = next(e for e in _events(self.log)
+                  if e["event"] == "watch_targets_degraded")
+        self.assertEqual(ev["source"], "state")
+        self.assertEqual(ev["error"], "JSONDecodeError")
+
+    def test_missing_shortlist_degrades_loudly_not_silently(self):
+        os.remove(self.shortlist_path)
+        self.seed()
+        rc, _ = self.watch(lambda: _snap(BASE_PLAYERS))
+
+        self.assertEqual(rc, 0)
+        ev = next(e for e in _events(self.log)
+                  if e["event"] == "watch_targets_degraded")
+        self.assertEqual(ev["source"], "shortlist")
+
 
 # --- units ------------------------------------------------------------------
 
