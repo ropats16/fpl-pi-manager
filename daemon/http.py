@@ -53,9 +53,14 @@ class FakeTransport:
     body in `llm_requests`.
     """
 
-    def __init__(self, updates_batches=None, llm_reply="ok"):
+    def __init__(self, updates_batches=None, llm_reply="ok", llm_replies=None):
         self.updates_batches = list(updates_batches or [])
         self.llm_reply = llm_reply
+        # Optional queue of distinct replies, popped one per chat/completions
+        # request (a brief wake can make two: a plan-block retry, or the final
+        # re-generation). Falls back to `llm_reply` once drained — backward
+        # compatible with callers that only set `llm_reply`.
+        self.llm_replies = list(llm_replies) if llm_replies is not None else None
         self.sent = []          # [{chat_id, text}]
         self.llm_requests = []  # [parsed request body dict]
         self.requests = []      # [(method, url)]
@@ -71,8 +76,12 @@ class FakeTransport:
             return _json_response({"ok": True, "result": {"message_id": 1}})
         if "chat/completions" in url:
             self.llm_requests.append(json.loads(body.decode("utf-8")))
+            if self.llm_replies:
+                reply = self.llm_replies.pop(0)
+            else:
+                reply = self.llm_reply
             return _json_response({
                 "choices": [{"message": {"role": "assistant",
-                                         "content": self.llm_reply}}]
+                                         "content": reply}}]
             })
         raise AssertionError(f"unexpected request to {url}")

@@ -157,6 +157,13 @@ class SelectPlaybookTest(unittest.TestCase):
     def test_unknown_question_defaults_to_squad_review(self):
         self.assertEqual(select_playbook("random chatter"), "squad-review")
 
+    def test_draft_and_final_deadline_texts_route_distinctly(self):
+        # The #18 brief wake drives both playbooks via its synthetic user text.
+        self.assertEqual(select_playbook("produce the GW2 draft deadline brief"),
+                         "deadline-brief")
+        self.assertEqual(select_playbook("final pre-deadline check for GW2"),
+                         "deadline-final")
+
 
 class AssemblerTest(unittest.TestCase):
     def _assembler(self, cap=None):

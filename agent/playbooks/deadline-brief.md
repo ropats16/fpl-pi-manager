@@ -22,3 +22,28 @@ By now the analysts and the AM have reported. You've formed the plan. Write it a
 - A `yes` approves the **whole plan atomically** — transfers, XI, (C), (VC), contingencies. Don't offer half-approvals; if he wants one field changed he iterates and you re-emit a full plan.
 - Any plan **containing a chip** needs a fresh `yes` at the final — never let it ride a carried draft-yes. Flag it, and make sure you gave advance heads-up in the prior review or monthly note.
 - Keep it under ~250 words. If you're over, cut prose, not the skeleton.
+
+## Machine plan block
+
+After the eight-part skeleton, **always** end the brief with a fenced ` ```plan ` JSON block — this is the machine snapshot the daemon freezes as what a `yes` approves (#18). The daemon strips it before Telegram, so it never adds to your word count; the human sees only the prose skeleton above it.
+
+Emit it with **exactly** these keys:
+
+```plan
+{
+  "transfers_in": ["<web name>", ...],
+  "transfers_out": ["<web name>", ...],
+  "hits": 0,
+  "starting_xi": ["<11 web names>"],
+  "captain": "<web name>",
+  "vice": "<web name>",
+  "chip": null,
+  "contingencies": ["if <X> ruled out → <do Y>", ...]
+}
+```
+
+- `transfers_in` / `transfers_out` are paired in order (first out ↔ first in). Empty lists = roll the FT.
+- `hits` is the point cost as a positive integer (0 for none, 4 for one hit, …).
+- `starting_xi` is all 11 starters as **web names** (the projection join key), `chip` is `null` unless you are actually playing one this GW.
+- `contingencies` are the named "if X → Y" fallbacks from part 7, one string each.
+- On an **iterate** (`change X`), re-emit the **FULL** brief *and* a fresh block — a partial block is not a plan. The struct diff at the final ping compares this block field-by-field, so anything you change here forces a fresh `yes`.

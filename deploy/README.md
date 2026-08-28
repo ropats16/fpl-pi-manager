@@ -55,10 +55,13 @@ sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-pull.service   /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-pull.timer     /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-watch.service  /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-watch.timer    /etc/systemd/system/
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-brief.service  /etc/systemd/system/
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-brief.timer    /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fpl-gaffer.service
 sudo systemctl enable --now fpl-gaffer-pull.timer
 sudo systemctl enable --now fpl-gaffer-watch.timer
+sudo systemctl enable --now fpl-gaffer-brief.timer
 ```
 
 Add `github-token` and `fpl-cookie` credentials the same way (step 4) when the
@@ -97,6 +100,32 @@ wake seeds the baseline silently.
 systemctl list-timers fpl-gaffer-watch.timer
 sudo systemctl start fpl-gaffer-watch.service     # force a wake now
 journalctl -u fpl-gaffer-watch -n 20              # watch_wake / watch_quiet / watch_alert
+```
+
+## Deadline brief + approval (#18)
+
+`fpl-gaffer-brief.timer` wakes `python3 -m daemon brief` **every 15 minutes**
+(`*:05,20,35,50` — the 30-minute act window must catch a tick for *any* deadline
+minute; an hourly tick misses it for `:00` deadlines). Each
+wake is a cheap clock check against the next FPL deadline — outside a window it
+logs `brief_quiet` and spends zero tokens. It opens the LLM path only in the
+**draft** window (Rohit's IST evening / within 24h) and the **T−2h final**
+window, and it **acts** at T−30m. Unlike the watch, the brief thinks, so this
+unit loads **both** the `telegram-token` and the `openrouter-key` credentials.
+
+The approval gate lives in daemon code, not model judgment: at T−30m the daemon
+calls the actuator **only** on an explicit `yes` (state `approved`/`locked`); an
+unapproved deadline is a loud no-write (last team stands, FT banks). Approval
+state persists in `data/approval-state.json` (gitignored, shared with the reply
+loop so a `yes` sent to the bot flips the same gate the brief wake reads). The
+actuator is manual-apply only until the real FPL write path (#13/#14/#19) is
+proven — an `act` produces "apply in the FPL app" steps and writes the decision
+to `season-state.json` (`decisions.gwNN`), it never mutates an FPL team.
+
+```sh
+systemctl list-timers fpl-gaffer-brief.timer
+sudo systemctl start fpl-gaffer-brief.service     # force a wake now
+journalctl -u fpl-gaffer-brief -n 20              # brief_wake / brief_quiet / brief_draft_sent / brief_acted
 ```
 
 ## Applying updates (self-test-gated auto-reload)

@@ -1,0 +1,34 @@
+[Unit]
+Description=FPL Gaffer deadline brief + approval (clock-check -> draft/final/act)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gaffer
+WorkingDirectory=/opt/fpl-gaffer
+# Hourly deadline-brief wake (#18): a cheap clock check against the next FPL
+# deadline. Outside a window it sends nothing and spends zero tokens; inside the
+# draft/final windows it assembles a grounded prompt and thinks (one LLM call).
+# At T-30m it acts — but ONLY on an explicit approval; an unapproved deadline is
+# a loud no-write, never an autonomous change (approval gate is in daemon code).
+ExecStart=/usr/bin/python3 -m daemon brief
+
+# The brief thinks, so unlike the watch it loads BOTH the Telegram token and the
+# OpenRouter key — the two credentials the draft/final generation needs.
+LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
+LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key
+
+# Non-secret config outside every gaffer-writable path (numeric allowlist). (#10 §2)
+EnvironmentFile=-/etc/fpl-gaffer/gaffer.env
+
+# Hardening — same defense-in-depth as the daemon and watch; the brief writes
+# only its approval state + decision log under the repo (data/ is gitignored).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/fpl-gaffer
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=256M
