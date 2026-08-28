@@ -104,7 +104,9 @@ journalctl -u fpl-gaffer-watch -n 20              # watch_wake / watch_quiet / w
 
 ## Deadline brief + approval (#18)
 
-`fpl-gaffer-brief.timer` wakes `python3 -m daemon brief` **hourly** (`*:20`). Each
+`fpl-gaffer-brief.timer` wakes `python3 -m daemon brief` **every 15 minutes**
+(`*:05,20,35,50` — the 30-minute act window must catch a tick for *any* deadline
+minute; an hourly tick misses it for `:00` deadlines). Each
 wake is a cheap clock check against the next FPL deadline — outside a window it
 logs `brief_quiet` and spends zero tokens. It opens the LLM path only in the
 **draft** window (Rohit's IST evening / within 24h) and the **T−2h final**

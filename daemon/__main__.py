@@ -28,6 +28,11 @@ def _approval_state_path(env):
                    os.path.join(REPO_ROOT, "data", "approval-state.json"))
 
 
+def _reports_dir(env):
+    return env.get("GAFFER_REPORTS_DIR",
+                   os.path.join(REPO_ROOT, "agent", "reports"))
+
+
 def build_assembler(env=None, approval_store_path=None):
     """Wire the prompt assembler from repo-relative paths (env-overridable so the
     Pi clone can point elsewhere). Context is assembled from these files at
@@ -49,7 +54,8 @@ def run_daemon(env=None, out=None):
     cfg = load_config(env)
     telegram, llm, logger = build_stack(cfg, UrllibTransport(), out)
     approval_path = _approval_state_path(env)
-    approvals = ApprovalGate(ApprovalStore(approval_path))
+    approvals = ApprovalGate(ApprovalStore(approval_path),
+                             reports_dir=_reports_dir(env))
     assembler = build_assembler(env, approval_store_path=approval_path)
     run(cfg, telegram, llm, logger, assembler=assembler, approvals=approvals)
     return 0
@@ -164,8 +170,7 @@ def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
     telegram, llm, logger = build_stack(cfg, transport, out)
 
     approval_path = _approval_state_path(env)
-    reports_dir = env.get("GAFFER_REPORTS_DIR",
-                          os.path.join(REPO_ROOT, "agent", "reports"))
+    reports_dir = _reports_dir(env)
     state_path = env.get("GAFFER_STATE_PATH",
                          os.path.join(REPO_ROOT, "season-state.json"))
     store = ApprovalStore(approval_path)

@@ -14,11 +14,11 @@ failure does not mark the touchpoint sent, so it re-sends next tick. Silence
 (outside every window) is the default and costs zero tokens.
 """
 
-import os
+import json
 from datetime import datetime, timedelta, timezone
 
-from daemon.plan import (parse_plan, plan_summary, plans_differ,
-                         record_decision)
+from daemon.plan import (append_decision_log, parse_plan, plan_summary,
+                         plans_differ, record_decision)
 from daemon.prompt import estimate_tokens
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -92,17 +92,6 @@ def _send_all(telegram, allowlist, text, logger, gw):
     return True
 
 
-def _append_decision_log(reports_dir, gw, full_reply, now):
-    """Append the FULL brief (plan block and all) to the repo record
-    (weekly-cycle.md §2). The lean stripped text goes to Telegram; the durable
-    reasoning lives here for the post-GW review."""
-    d = os.path.join(reports_dir, f"gw{gw:02d}")
-    os.makedirs(d, exist_ok=True)
-    ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    with open(os.path.join(d, "decision-log.md"), "a", encoding="utf-8") as f:
-        f.write(f"\n\n## Deadline brief — {ts}\n\n{full_reply}\n")
-
-
 def _generate(assembler_factory, llm_complete, user_text):
     """Assemble a fresh grounded prompt and get one LLM reply. The assembler is
     built per-call so a pulled markdown/state change applies to this wake (#7)."""
@@ -145,7 +134,9 @@ def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
     store.set_pending(gw, plan)          # plan may be None (no usable block)
     store.draft_sent = True
     store.save()
-    _append_decision_log(reports_dir, gw, reply, now)
+    # The FULL reply (plan block and all) is the repo record (§2); the lean
+    # stripped text is what went to Telegram.
+    append_decision_log(reports_dir, gw, "Deadline brief", reply, now=now)
     logger.event("brief_draft_sent", gw=gw, tokens=estimate_tokens(reply),
                  has_plan=plan is not None)
     return 0
@@ -200,6 +191,22 @@ def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
     return 0
 
 
+def _state_captain(state_path):
+    """The current captain's name from season state, for the no-write alert
+    (§3⑤ names the standing captain: '(C)=X'). Any read problem -> None — the
+    alert must fire regardless."""
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            state = json.load(f)
+        cid = state.get("captain")
+        for p in state.get("squad", {}).get("picks", []):
+            if p.get("id") == cid:
+                return p.get("name")
+    except Exception:                    # noqa: BLE001 — cosmetic, never blocking
+        pass
+    return None
+
+
 def _do_act(store, telegram, allowlist, logger, actuator, state_path, gw, now):
     approved = store.approved_plan
     if store.phase in ("approved", "locked") and approved is not None:
@@ -216,8 +223,9 @@ def _do_act(store, telegram, allowlist, logger, actuator, state_path, gw, now):
 
     # No valid approval at the act-moment: NO actuator call (§3⑤ no-write).
     record_decision(state_path, gw, approved, "no_write", now=now)
+    cap = _state_captain(state_path)
     msg = (f"⚠ GW{gw} locked with NO changes — no approval in time. "
-           "Last team stands, FT banks.")
+           f"Last team stands{f', (C) {cap}' if cap else ''}, FT banks.")
     if not _send_all(telegram, allowlist, msg, logger, gw):
         return 1
     store.phase = "no_write"

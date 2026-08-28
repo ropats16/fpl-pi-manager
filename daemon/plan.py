@@ -119,19 +119,26 @@ def plans_differ(a, b):
     return False
 
 
+def transfer_pairs(plan, out_label="OUT ", arrow=" → ", in_label="IN "):
+    """The plan's transfers as paired 'out → in' strings, '—' padding the short
+    side. One shared shape for the prose section, the summary line, and the
+    actuator's manual-apply steps."""
+    ti = plan.get("transfers_in") or []
+    to = plan.get("transfers_out") or []
+    return [f"{out_label}{to[i] if i < len(to) else '—'}{arrow}"
+            f"{in_label}{ti[i] if i < len(ti) else '—'}"
+            for i in range(max(len(ti), len(to)))]
+
+
 def plan_prose(plan):
     """Render a plan as human/model-readable markdown lines — NEVER json.dumps
     (repo invariant #9/#10: model context is distilled prose, never raw json).
     Used for the debate-grounding section and the approval receipts."""
     if not plan:
         return "- (no structured plan)"
-    ti = plan.get("transfers_in") or []
-    to = plan.get("transfers_out") or []
     lines = []
-    if ti or to:
-        n = max(len(ti), len(to))
-        pairs = [f"OUT {to[i] if i < len(to) else '—'} → IN {ti[i] if i < len(ti) else '—'}"
-                 for i in range(n)]
+    pairs = transfer_pairs(plan)
+    if pairs:
         lines.append("- Transfers: " + "; ".join(pairs))
     else:
         lines.append("- Transfers: none")
@@ -156,15 +163,9 @@ def plan_summary(plan):
     """A one-line plan summary for the approval/lock receipts."""
     if not plan:
         return "no changes"
-    ti = plan.get("transfers_in") or []
-    to = plan.get("transfers_out") or []
     parts = []
-    if ti or to:
-        n = max(len(ti), len(to))
-        parts.append(", ".join(f"{to[i] if i < len(to) else '—'}→{ti[i] if i < len(ti) else '—'}"
-                               for i in range(n)))
-    else:
-        parts.append("no transfers")
+    pairs = transfer_pairs(plan, out_label="", arrow="→", in_label="")
+    parts.append(", ".join(pairs) if pairs else "no transfers")
     if plan.get("captain"):
         parts.append(f"(C) {plan['captain']}")
     if plan.get("vice"):
@@ -219,13 +220,7 @@ class ApprovalStore:
         return self
 
     def save(self):
-        parent = os.path.dirname(self.path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self._dict(), f)
-        os.replace(tmp, self.path)      # atomic — never a half-written state
+        _atomic_write_json(self.path, self._dict())
         return self
 
     def reset_for(self, gw):
@@ -260,11 +255,36 @@ class ApprovalStore:
 
 
 class ApprovalGate:
-    """The tiny handle the reply loop is wired with — holds the store so
-    process_message can load fresh state and flip the gate in daemon code."""
+    """The handle the reply loop is wired with — holds the store so
+    process_message can load fresh state and flip the gate in daemon code, and
+    (when set) the reports dir so an iterate's full reply — the gaffer's dissent
+    included — lands in the repo decision log (§3④, scored post-GW by #21)."""
 
-    def __init__(self, store):
+    def __init__(self, store, reports_dir=None):
         self.store = store
+        self.reports_dir = reports_dir
+
+
+def _atomic_write_json(path, obj, indent=None):
+    """temp+rename in the target dir — never a half-written state file."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=indent)
+    os.replace(tmp, path)
+
+
+def append_decision_log(reports_dir, gw, title, body, now=None):
+    """Append one titled entry to the repo record `reports/gwNN/decision-log.md`
+    (weekly-cycle.md §2): drafts, finals, and iterate replies (dissent included)
+    all land here — the durable reasoning behind what Telegram carried lean."""
+    d = os.path.join(reports_dir, f"gw{gw:02d}")
+    os.makedirs(d, exist_ok=True)
+    ts = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with open(os.path.join(d, "decision-log.md"), "a", encoding="utf-8") as f:
+        f.write(f"\n\n## {title} — {ts}\n\n{body}\n")
 
 
 def record_decision(state_path, gw, plan, status, now=None):
@@ -278,8 +298,4 @@ def record_decision(state_path, gw, plan, status, now=None):
     ts = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
     decisions = state.setdefault("decisions", {})
     decisions[f"gw{gw:02d}"] = {"plan": plan, "status": status, "recorded_at": ts}
-    parent = os.path.dirname(state_path)
-    tmp = os.path.join(parent, ".season-state.tmp") if parent else ".season-state.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
-    os.replace(tmp, state_path)
+    _atomic_write_json(state_path, state, indent=2)

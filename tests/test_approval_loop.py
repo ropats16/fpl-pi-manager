@@ -68,7 +68,7 @@ class ApprovalLoopHarness(unittest.TestCase):
     def seed_pending(self, plan):
         ApprovalStore(self.approval_path).set_pending(2, plan)
 
-    def run_text(self, text, llm_reply="debate reply"):
+    def run_text(self, text, llm_reply="debate reply", reports_dir=None):
         fake = FakeTransport(
             updates_batches=[[private_message(from_id=42, text=text)]],
             llm_reply=llm_reply)
@@ -76,7 +76,8 @@ class ApprovalLoopHarness(unittest.TestCase):
         tg, llm, log = build_stack(cfg, fake, self.log)
         assembler = Assembler(_workspace(), STATE, projections_path=PROJ, gw=2,
                               approval_store_path=self.approval_path)
-        gate = ApprovalGate(ApprovalStore(self.approval_path))
+        gate = ApprovalGate(ApprovalStore(self.approval_path),
+                            reports_dir=reports_dir)
         poll_once(cfg, tg, llm, log, offset=0, assembler=assembler, approvals=gate)
         return fake
 
@@ -140,6 +141,21 @@ class IterateTest(ApprovalLoopHarness):
         self.assertNotIn("```", fake.sent[0]["text"])
         self.assertIn("Revised", fake.sent[0]["text"])
         self.assertIn("iterate", self.kinds())
+
+    def test_iterate_logs_the_full_reply_to_the_decision_log(self):
+        # §3④: on a complied `change X` the gaffer's dissent is scored post-GW,
+        # so the FULL revised reply (plan block included) lands in the repo log.
+        reports = os.path.join(self._tmp.name, "reports")
+        self.seed_pending(_plan(captain="Haaland"))
+        self.run_text("change (C) to Salah",
+                      llm_reply=_block(_plan(captain="Salah")),
+                      reports_dir=reports)
+        log_path = os.path.join(reports, "gw02", "decision-log.md")
+        self.assertTrue(os.path.exists(log_path))
+        with open(log_path) as f:
+            body = f.read()
+        self.assertIn("Iterate (revised plan)", body)
+        self.assertIn("```plan", body)                       # full record, not lean
 
 
 class StopTest(ApprovalLoopHarness):

@@ -13,6 +13,7 @@ no-approval timeout is a loud no-write, not a silent contingency execution. That
 autonomous path lands with the real write actuator (#19).
 """
 
+from daemon.plan import transfer_pairs
 from daemon.plan import record_decision  # noqa: F401  (re-exported for callers)
 
 
@@ -28,11 +29,8 @@ class ManualApplyActuator:
 
         lines = ["Apply in the FPL app before the deadline:"]
         n = 1
-        ti = plan.get("transfers_in") or []
-        to = plan.get("transfers_out") or []
-        if ti or to:
-            pairs = [f"OUT {to[i] if i < len(to) else '—'} → IN {ti[i] if i < len(ti) else '—'}"
-                     for i in range(max(len(ti), len(to)))]
+        pairs = transfer_pairs(plan)
+        if pairs:
             hits = plan.get("hits") or 0
             hit_str = f" (−{hits} hit)" if hits else ""
             lines.append(f"{n}. Transfer " + "; ".join(pairs) + hit_str)

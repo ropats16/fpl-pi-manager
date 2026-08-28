@@ -2,11 +2,13 @@
 Description=FPL Gaffer deadline-brief timer (hourly clock check)
 
 [Timer]
-# Hourly, at :20 past the hour. The wake itself is a cheap clock check against
-# the next FPL deadline (#18); it only opens the LLM path inside the draft
-# (IST-evening / <24h) and final (T-2h) windows, and acts at T-30m. Hourly
-# granularity is what lets the T-2h final and T-30m act windows fire on time.
-OnCalendar=*-*-* *:20:00
+# Every 15 minutes. The wake itself is a cheap clock check against the next FPL
+# deadline (#18); it only opens the LLM path inside the draft (IST-evening /
+# <24h) and final (T-2h) windows, and acts at T-30m. 15-minute ticks are what
+# guarantee a tick lands inside the 30-minute act window for ANY deadline
+# minute — an hourly tick misses it for :00 deadlines (T-40 is final, the next
+# tick is past the deadline) and an approved plan would never lock.
+OnCalendar=*-*-* *:05,20,35,50:00
 # Fire on next boot if the Pi slept through a scheduled wake — never miss a lock.
 Persistent=true
 

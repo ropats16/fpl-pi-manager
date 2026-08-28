@@ -307,6 +307,12 @@ class ActFlowTest(BriefHarness):
 
     def test_unapproved_act_makes_no_actuator_call_and_no_writes(self):
         # phase awaiting_approval, nothing approved -> the timeout no-write.
+        with open(self.state_path) as f:
+            state = json.load(f)
+        state["captain"] = 7
+        state["squad"]["picks"] = [{"id": 7, "name": "Haaland"}]
+        with open(self.state_path, "w") as f:
+            json.dump(state, f)
         self.store.set_pending(2, _plan())
         self.store.save()
 
@@ -315,6 +321,7 @@ class ActFlowTest(BriefHarness):
         self.assertEqual(self.actuator.applied, [])           # HARD gate assertion
         self.assertEqual(self.decisions()["gw02"]["status"], "no_write")
         self.assertIn("NO changes", tg.sent[0]["text"])
+        self.assertIn("(C) Haaland", tg.sent[0]["text"])      # §3⑤ names the captain
         st = ApprovalStore(self.approval_path).load()
         self.assertEqual(st.phase, "no_write")
         self.assertIn("brief_no_write", self.kinds())

@@ -14,7 +14,8 @@ as debate, grounded on the pending/approved plan via the assembler.
 
 import time
 
-from daemon.plan import is_approval, is_stop, parse_plan, plan_summary
+from daemon.plan import (append_decision_log, is_approval, is_stop, parse_plan,
+                         plan_summary)
 
 
 def process_message(msg, cfg, telegram, llm, logger, assembler=None,
@@ -85,6 +86,15 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
             approvals.store.void_carry(plan)
             logger.event("iterate", gw=st.gw)
             send_text = stripped
+            if approvals.reports_dir and st.gw is not None:
+                # The full revised brief — the gaffer's dissent on a complied
+                # `change X` included — is the repo record §3④ scores post-GW.
+                try:
+                    append_decision_log(approvals.reports_dir, st.gw,
+                                        "Iterate (revised plan)", reply)
+                except Exception as e:   # noqa: BLE001 — a log write never mutes a reply
+                    logger.event("decision_log_error", gw=st.gw,
+                                 error=type(e).__name__, detail=str(e))
 
     logger.event("reply", from_id=msg.from_id, chat_id=msg.chat_id,
                  prompt=msg.text, reply=send_text)
