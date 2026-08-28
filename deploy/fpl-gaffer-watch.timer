@@ -1,0 +1,15 @@
+[Unit]
+Description=FPL Gaffer watch timer (2x/day: post-price-change + evening news)
+
+[Timer]
+# FPL price changes land ~01:30-02:30 UTC, so the morning wake at 03:10 UTC
+# (08:40 IST) catches them fresh; the 14:10 UTC wake (19:40 IST) catches the
+# day's status/news churn at a phone-friendly hour. 1-3x/day per #17 — a third
+# OnCalendar line is the knob if press-conference season demands it.
+OnCalendar=*-*-* 03:10:00 UTC
+OnCalendar=*-*-* 14:10:00 UTC
+# Fire on next boot if the Pi slept through a scheduled wake.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

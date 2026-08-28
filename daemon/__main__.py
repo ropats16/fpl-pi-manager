@@ -6,13 +6,16 @@ import json
 import os
 import sys
 
+import fpl_api
 from daemon.config import Config, load_config, load_notify_config
 from daemon.http import FakeTransport, UrllibTransport
 from daemon.llm import DEFAULT_BASE_URL
+from daemon.logging_setup import StructuredLogger
 from daemon.loop import poll_once, run
 from daemon.prompt import Assembler, estimate_tokens
 from daemon.runtime import build_stack
 from daemon.telegram import Telegram
+from daemon.watch import run_watch
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -107,11 +110,39 @@ def run_notify(args, env=None, transport=None, out=None):
     return 0 if sent else 1
 
 
+def run_watch_cmd(env=None, transport=None, out=None, fetch=None):
+    """`daemon watch` — the timer-driven price/status wake (#17). Deterministic:
+    it fetches, diffs, and alerts without ever loading the LLM key (notify-grade
+    config only, same least-privilege posture as the deploy notice). Paths are
+    env-overridable so the Pi clone can relocate them; the baseline lives under
+    the gitignored data/ dir because it is machine state, not repo content."""
+    out = sys.stderr if out is None else out
+    allowlist, token = load_notify_config(env)
+    env = os.environ if env is None else env
+    logger = StructuredLogger(stream=out, secrets=[token])
+    telegram = Telegram(token, UrllibTransport() if transport is None else transport)
+    if fetch is None:
+        def fetch():
+            return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))
+    return run_watch(
+        fetch=fetch,
+        state_path=env.get("GAFFER_STATE_PATH",
+                           os.path.join(REPO_ROOT, "season-state.json")),
+        shortlist_path=env.get("GAFFER_SHORTLIST_PATH",
+                               os.path.join(REPO_ROOT, "agent", "memory",
+                                            "shortlist.md")),
+        baseline_path=env.get("GAFFER_WATCH_BASELINE_PATH",
+                              os.path.join(REPO_ROOT, "data", "watch-baseline.json")),
+        telegram=telegram, allowlist=allowlist, logger=logger)
+
+
 def main(argv):
     if len(argv) > 1 and argv[1] == "selftest":
         return run_selftest()
     if len(argv) > 1 and argv[1] == "notify":
         return run_notify(argv[2:])
+    if len(argv) > 1 and argv[1] == "watch":
+        return run_watch_cmd()
     return run_daemon()
 
 

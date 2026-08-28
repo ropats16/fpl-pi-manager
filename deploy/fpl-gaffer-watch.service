@@ -1,0 +1,31 @@
+[Unit]
+Description=FPL Gaffer price/status watch (fetch -> diff -> alert-if-relevant)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gaffer
+WorkingDirectory=/opt/fpl-gaffer
+# Deterministic watch wake (#17): fetch bootstrap, health-check, diff against
+# the last baseline, Telegram-alert ONLY on own-squad/shortlist price or status
+# changes. No LLM in this path — a quiet day costs zero tokens.
+ExecStart=/usr/bin/python3 -m daemon watch
+
+# Telegram token only — the watch never loads the LLM key (least privilege,
+# same posture as the pull unit's notify path, #10 §3).
+LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
+
+# Non-secret config outside every gaffer-writable path (numeric allowlist). (#10 §2)
+EnvironmentFile=-/etc/fpl-gaffer/gaffer.env
+
+# Hardening — same defense-in-depth as the daemon; the watch only writes its
+# baseline snapshot under the repo (data/ is gitignored). (#10 §6)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/fpl-gaffer
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=256M

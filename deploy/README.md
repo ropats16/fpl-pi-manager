@@ -53,9 +53,12 @@ chmod +x /opt/fpl-gaffer/deploy/pull-reload.sh
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer.service        /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-pull.service   /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-pull.timer     /etc/systemd/system/
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-watch.service  /etc/systemd/system/
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-watch.timer    /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fpl-gaffer.service
 sudo systemctl enable --now fpl-gaffer-pull.timer
+sudo systemctl enable --now fpl-gaffer-watch.timer
 ```
 
 Add `github-token` and `fpl-cookie` credentials the same way (step 4) when the
@@ -77,6 +80,23 @@ sudo reboot     # after boot: systemctl is-active fpl-gaffer  -> active
 # Pull path works:
 systemctl list-timers fpl-gaffer-pull.timer
 sudo systemctl start fpl-gaffer-pull.service && journalctl -u fpl-gaffer-pull -n 20
+```
+
+## Price/status watch (#17)
+
+`fpl-gaffer-watch.timer` wakes `python3 -m daemon watch` twice a day (03:10 UTC
+post-price-change, 14:10 UTC evening news). Each wake fetches the FPL bootstrap,
+health-checks it, diffs against `data/watch-baseline.json`, and Telegram-alerts
+**only** when an own-squad or shortlisted player has a price or status change —
+a quiet day sends nothing and spends zero tokens (no LLM in this path; the unit
+loads only the telegram-token credential). Shortlist lives in
+`agent/memory/shortlist.md`; squad ids come from `season-state.json`. The first
+wake seeds the baseline silently.
+
+```sh
+systemctl list-timers fpl-gaffer-watch.timer
+sudo systemctl start fpl-gaffer-watch.service     # force a wake now
+journalctl -u fpl-gaffer-watch -n 20              # watch_wake / watch_quiet / watch_alert
 ```
 
 ## Applying updates (self-test-gated auto-reload)
