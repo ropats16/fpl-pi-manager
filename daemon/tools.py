@@ -26,12 +26,14 @@ interface; helper code never changes.
 
 import html as _html
 from html.parser import HTMLParser
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
-from daemon.prompt import _char_budget
+from daemon.prompt import char_budget
 
 ODDS_HOST = "api.the-odds-api.com"
 FETCH_MAX_TOKENS = 8000
+MAX_REDIRECTS = 5
+_REDIRECTS = (301, 302, 303, 307, 308)
 _BLOCK_TAGS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
                "section", "article", "header", "footer", "table", "ul", "ol",
                "blockquote", "pre", "td", "th"}
@@ -92,7 +94,7 @@ def _host_allowed(host, allowlist):
 
 
 def _truncate(text, max_tokens):
-    budget = _char_budget(max_tokens)
+    budget = char_budget(max_tokens)
     if len(text) <= budget:
         return text
     return text[:budget] + f"\n[truncated at ~{max_tokens} tokens]"
@@ -154,6 +156,24 @@ class Fetcher:
         try:
             resp = self._transport.request("GET", wire_url, self._headers, None)
             self.requests_made += 1
+            hops = 0
+            while resp.status in _REDIRECTS and hops < MAX_REDIRECTS:
+                # The transport never follows redirects; every hop is re-checked
+                # against the allowlist BEFORE its request, so an allowlisted
+                # page cannot bounce the daemon off the list (#10 §5).
+                target = urljoin(wire_url, resp.headers.get("location", ""))
+                tparts = urlsplit(target)
+                if (tparts.scheme not in ("http", "https")
+                        or not _host_allowed(tparts.hostname, self._allowlist)):
+                    self._log("fetch_refused", url=url, host=tparts.hostname or target[:80],
+                              reason="redirect_off_allowlist")
+                    return (f"fetch refused: {parts.hostname} redirected to "
+                            f"{tparts.hostname or 'an invalid URL'}, which is not on the "
+                            "allowlist; no request was made there.")
+                wire_url = target
+                resp = self._transport.request("GET", wire_url, self._headers, None)
+                self.requests_made += 1
+                hops += 1
         except Exception as e:       # noqa: BLE001 — a bad source never stalls a helper
             detail = self._scrub(f"{type(e).__name__}: {e}")
             self._log("fetch_error", url=url, error=detail[:200])

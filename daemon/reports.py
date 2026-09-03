@@ -17,12 +17,8 @@ lands with the Scout timer (#57) on this same writer.
 
 import os
 
-from daemon.prompt import _char_budget, estimate_tokens
-
-HEADER_KEYS = ("model", "started", "finished", "fetches", "searches",
-               "coverage", "status")
-# Files in a gw folder that are not helper reports (the brief/review record).
-_NOT_REPORTS = {"decision-log.md", "scout-log.md"}
+from daemon.config import HELPER_ROLES
+from daemon.prompt import char_budget, estimate_tokens
 
 
 class ReportRefused(Exception):
@@ -58,17 +54,19 @@ def strip_header(text):
 
 
 def read_reports(reports_dir, gw):
-    """{role: body} for every helper report in the GW folder (headers stripped,
-    decision log and scout log excluded), sorted by role. Missing folder -> {}."""
+    """{role: body} for every helper-role report in the GW folder (headers
+    stripped), sorted by role. Only `<role>.md` for a known helper role counts:
+    the decision log, the Scout log and any other file in the folder are not
+    "reports already written this wake". Missing folder -> {}."""
     folder = gw_folder(reports_dir, gw)
     if not os.path.isdir(folder):
         return {}
     out = {}
-    for name in sorted(os.listdir(folder)):
-        if not name.endswith(".md") or name in _NOT_REPORTS or name.startswith("."):
-            continue
-        with open(os.path.join(folder, name), encoding="utf-8") as f:
-            out[name[:-3]] = strip_header(f.read())
+    for role in sorted(HELPER_ROLES):
+        path = os.path.join(folder, f"{role}.md")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                out[role] = strip_header(f.read())
     return out
 
 
@@ -117,7 +115,7 @@ class ReportWriter:
         body = (body or "").strip()
         if estimate_tokens(body) <= self.cap_tokens:
             return body
-        budget = _char_budget(self.cap_tokens)
+        budget = char_budget(self.cap_tokens)
         self._log("report_capped", role=role, tokens=estimate_tokens(body),
                   cap=self.cap_tokens)
         return body[:budget].rstrip() + f"\n\n[truncated at write time: ~{self.cap_tokens} token cap]"

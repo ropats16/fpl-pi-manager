@@ -20,7 +20,7 @@ import json
 import os
 from datetime import datetime, timezone
 
-from daemon.prompt import _char_budget, load_projections, season_snapshot
+from daemon.prompt import char_budget, load_projections, season_snapshot
 from daemon.reports import ReportRefused, read_reports
 from daemon.tools import FETCH_TOOL, SEARCH_TOOL
 
@@ -103,12 +103,12 @@ def _read(path):
 
 
 def _tail(text, max_tokens):
-    budget = _char_budget(max_tokens)
+    budget = char_budget(max_tokens)
     return text if len(text) <= budget else "…" + text[-budget:]
 
 
 def _head(text, max_tokens):
-    budget = _char_budget(max_tokens)
+    budget = char_budget(max_tokens)
     return text if len(text) <= budget else text[:budget] + "…"
 
 
@@ -193,12 +193,17 @@ def run_helper(role, llm, model, workspace_root, state_path, gw, fetcher, search
     cap = None
     detail = ""
     report = None
-    fetches = searches = 0
     unchecked = []
+
+    # Tool table: name -> (ceiling key, tool callable). Counts live in `used`.
+    used = {"fetches": 0, "searches": 0}
+    table = {"fetch": ("fetches", "url", lambda a: fetcher.fetch(a)),
+             "search": ("searches", "query", lambda a: searcher.search(a, role=role))}
 
     try:
         while True:
-            if res.turns >= caps["turns"]:
+            # The write-up turn counts: a 40-turn ceiling is 40 LLM calls total.
+            if res.turns + 1 >= caps["turns"]:
                 cap, detail = "turns", f"{caps['turns']} turns"
                 break
             elapsed = (clock() - res.started).total_seconds()
@@ -213,26 +218,20 @@ def run_helper(role, llm, model, workspace_root, state_path, gw, fetcher, search
                 break
             messages.append(reply.message)
             for call in reply.tool_calls:
-                if call.name == "fetch":
-                    url = str(call.arguments.get("url", ""))
-                    if cap or fetches >= caps["fetches"]:
-                        cap, detail = cap or "fetches", detail or f"{caps['fetches']} fetches"
-                        unchecked.append(url)
-                        result = "fetch refused: the fetch ceiling for this run is reached."
-                    else:
-                        fetches += 1
-                        result = fetcher.fetch(url)
-                elif call.name == "search":
-                    query = str(call.arguments.get("query", ""))
-                    if cap or searches >= caps["searches"]:
-                        cap, detail = cap or "searches", detail or f"{caps['searches']} searches"
-                        unchecked.append(f"search: {query}")
-                        result = "search refused: the search ceiling for this run is reached."
-                    else:
-                        searches += 1
-                        result = searcher.search(query, role=role)
-                else:
+                if call.name not in table:
                     result = f"unknown tool {call.name!r}: only fetch and search exist."
+                else:
+                    key, arg_name, fn = table[call.name]
+                    arg = str(call.arguments.get(arg_name, ""))
+                    if cap or used[key] >= caps[key]:
+                        # First ceiling hit wins; the rest of this batch is refused
+                        # and listed as unchecked so the write-up can name it.
+                        cap, detail = cap or key, detail or f"{caps[key]} {key}"
+                        unchecked.append(arg if key == "fetches" else f"search: {arg}")
+                        result = f"{call.name} refused: the {key} ceiling for this run is reached."
+                    else:
+                        used[key] += 1
+                        result = fn(arg)
                 messages.append({"role": "tool", "tool_call_id": call.id,
                                  "content": result})
             if cap:
@@ -242,7 +241,7 @@ def run_helper(role, llm, model, workspace_root, state_path, gw, fetcher, search
             res.status = "cap_hit"
             res.cap = cap
             logger.event("cap_hit", role=role, gw=gw, ceiling=cap, turns=res.turns,
-                         fetches=fetches, searches=searches)
+                         fetches=used["fetches"], searches=used["searches"])
             messages.append({"role": "user",
                              "content": _WRITE_UP.format(ceiling=cap, detail=detail)})
             reply = llm.chat(messages, model=model, role=role, max_tokens=HELPER_MAX_TOKENS)

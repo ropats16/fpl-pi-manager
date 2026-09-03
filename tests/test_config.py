@@ -97,6 +97,19 @@ class HelperSettingsTest(unittest.TestCase):
         self.assertEqual(load_config(env=_env(ODDS_API_KEY="env-odds")).odds_api_key,
                          "env-odds")
 
+    def test_per_role_model_override_is_a_config_change(self):
+        h = load_helper_settings({"GAFFER_HELPER_MODEL_MARKET": "x/other",
+                                  "GAFFER_HELPER_MODEL": "x/cheap"})
+        self.assertEqual(h.models["market"], "x/other")
+        self.assertEqual(h.models["availability"], "x/cheap")
+        self.assertEqual(h.models["am"], AM_MODEL)
+
+    def test_zero_or_junk_ceiling_falls_back_to_the_default(self):
+        h = load_helper_settings({"GAFFER_HELPER_MAX_TURNS": "0",
+                                  "GAFFER_HELPER_MAX_FETCHES": "-3",
+                                  "GAFFER_HELPER_MAX_SEARCHES": "ten"})
+        self.assertEqual(h.caps, {"fetches": 25, "searches": 10, "turns": 40, "minutes": 15})
+
     def test_bad_price_table_json_falls_back_to_defaults(self):
         h = load_helper_settings({"GAFFER_PRICE_TABLE": "{nope"})
         self.assertIn("z-ai/glm-5.3-flash", h.prices)

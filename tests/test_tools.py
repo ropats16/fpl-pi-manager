@@ -6,6 +6,7 @@ import io
 import json
 import unittest
 
+from daemon.http import UrllibTransport, _NoRedirect
 from daemon.llm import LLM
 from daemon.logging_setup import StructuredLogger
 from daemon.tools import ODDS_HOST, ExaSearch, Fetcher, html_to_text
@@ -74,6 +75,64 @@ class FetchAllowlistTest(unittest.TestCase):
         t.pages[FPL] = None    # unknown page -> the fake raises -> error text
         f, _ = _fetcher(t)
         self.assertIn("fetch failed", f.fetch(FPL))
+
+
+class RedirectTest(unittest.TestCase):
+    """The transport never follows redirects; the fetcher re-checks the
+    allowlist on every hop BEFORE requesting it (#10 §5: a poisoned page
+    cannot send the gaffer anywhere)."""
+
+    def test_redirect_off_allowlist_is_refused_before_any_request_there(self):
+        t = FakeTransport(pages={FPL: {"status": 302, "headers": {"Location": "https://evil.example/x"}},
+                                 "https://evil.example/x": "PWNED"})
+        f, logbuf = _fetcher(t)
+        out = f.fetch(FPL)
+        self.assertTrue(out.startswith("fetch refused"))
+        self.assertIn("evil.example", out)
+        self.assertEqual(t.requests, [("GET", FPL)])
+        ev = [json.loads(l) for l in logbuf.getvalue().splitlines()]
+        self.assertEqual(ev[-1]["reason"], "redirect_off_allowlist")
+
+    def test_redirect_within_allowlist_is_followed(self):
+        target = "https://fantasy.premierleague.com/api/bootstrap-static/v2/"
+        t = FakeTransport(pages={FPL: {"status": 301, "headers": {"Location": "/api/bootstrap-static/v2/"}},
+                                 target: "moved body"})
+        f, _ = _fetcher(t)
+        self.assertEqual(f.fetch(FPL), "moved body")
+        self.assertEqual([u for _, u in t.requests], [FPL, target])
+        self.assertEqual(f.requests_made, 2)
+
+    def test_redirect_loop_ends_as_an_error(self):
+        t = FakeTransport(pages={FPL: {"status": 302, "headers": {"Location": FPL}}})
+        f, _ = _fetcher(t)
+        self.assertIn("fetch failed: HTTP 302", f.fetch(FPL))
+        self.assertLessEqual(len(t.requests), 7)
+
+    def test_urllib_transport_never_follows_and_caps_the_read(self):
+        self.assertIsNone(_NoRedirect().redirect_request(None, None, 302, "", {}, "http://x"))
+
+        class _Resp:
+            status = 200
+            headers = {"Content-Type": "text/html"}
+
+            def read(self, n=-1):
+                return b"x" * (n if n and n > 0 else 10**7)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class _Opener:
+            def open(self, req, timeout=None):
+                return _Resp()
+
+        t = UrllibTransport(max_body_bytes=1000)
+        t._opener = _Opener()
+        resp = t.request("GET", "https://fantasy.premierleague.com/x")
+        self.assertEqual(len(resp.body), 1000)
+        self.assertEqual(resp.headers["content-type"], "text/html")
 
 
 class FetchBodyTest(unittest.TestCase):

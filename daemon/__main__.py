@@ -24,9 +24,8 @@ from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
 from daemon.reports import ReportWriter
 from daemon.review import ReviewStore, run_review
-from daemon.runtime import build_stack
+from daemon.runtime import build_helper_tools, build_stack
 from daemon.telegram import Telegram
-from daemon.tools import ExaSearch, Fetcher
 from daemon.watch import run_watch
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -122,7 +121,6 @@ _SELFTEST_LEARNINGS_REPLY = (
 
 
 _SELFTEST_FPL = "https://fantasy.premierleague.com/api/bootstrap-static/"
-_SELFTEST_FFS = "https://www.fantasyfootballscout.co.uk/team-news/"
 _SELFTEST_REPORT = (
     "**Haaland** — fit, full training (SELFTEST canned FFS team news, 2026-09-03). "
     "Judgment: nailed.\n\n"
@@ -131,7 +129,7 @@ _SELFTEST_REPORT = (
     "found nothing.")
 
 
-def _selftest_helper(cfg, out):
+def _selftest_helper(cfg):
     """The #54 acceptance demo, offline: one availability analyst runs as a tool
     loop through the fake transport — an allowlisted fetch, the same URL again
     (served from cache), an off-allowlist fetch (refused before any request), a
@@ -146,15 +144,13 @@ def _selftest_helper(cfg, out):
                      tool_call_message("fetch", {"url": "https://evil.example/x"}, "c3"),
                      tool_call_message("search", {"query": "Gordon knock Newcastle"}, "s1"),
                      _SELFTEST_REPORT],
-        pages={_SELFTEST_FPL: '{"elements": [{"web_name": "Haaland", "status": "a"}]}',
-               _SELFTEST_FFS: "<p>Haaland trained fully.</p>"},
+        pages={_SELFTEST_FPL: '{"elements": [{"web_name": "Haaland", "status": "a"}]}'},
         search_reply="1. Gordon fit — bbc.co.uk/sport/selftest — 2026-09-02",
         usage={"prompt_tokens": 3000, "completion_tokens": 400})
     logbuf = io.StringIO()
     _, llm, logger = build_stack(cfg, transport, logbuf)
     h = cfg.helpers
-    fetcher = Fetcher(transport, h.allowlist, odds_api_key=cfg.odds_api_key, logger=logger)
-    searcher = ExaSearch(llm, h.search_model, logger=logger, cost_usd=h.search_cost_usd)
+    fetcher, searcher = build_helper_tools(cfg, transport, llm, logger)
     writer = ReportWriter(os.path.join(tmp, "reports"), gw, logger=logger,
                           cap_tokens=REPORT_CAP_TOKENS["availability"])
     res = run_helper("availability", llm, h.models["availability"],
@@ -248,7 +244,7 @@ def run_selftest(out=None):
               f"block-stripped={stripped}\n")
 
     # #54: one analyst as a tool loop, offline, into a temp GW folder.
-    helper_ok, helper_lines = _selftest_helper(cfg, out)
+    helper_ok, helper_lines = _selftest_helper(cfg)
     for line in helper_lines:
         out.write(line + "\n")
     ok = ok and helper_ok
@@ -482,8 +478,7 @@ def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
         out.write(f"helper: {writer.path_for(role)} already written (write-once); "
                   "nothing run\n")
         return 0
-    fetcher = Fetcher(transport, h.allowlist, odds_api_key=cfg.odds_api_key, logger=logger)
-    searcher = ExaSearch(llm, h.search_model, logger=logger, cost_usd=h.search_cost_usd)
+    fetcher, searcher = build_helper_tools(cfg, transport, llm, logger)
     res = run_helper(role, llm, h.models[role],
                      env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent")),
                      state_path, gw, fetcher, searcher, writer, h.caps, logger,

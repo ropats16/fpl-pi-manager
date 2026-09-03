@@ -73,10 +73,13 @@ def default_helper_settings():
 
 
 def _int_env(env, key, default):
+    """A positive int from env, else the default (a 0 or negative ceiling
+    would make every helper cap out on its first turn)."""
     try:
-        return int(env.get(key, default))
+        v = int(env.get(key, default))
     except (TypeError, ValueError):
         return default
+    return v if v >= 1 else default
 
 
 def load_helper_settings(env=None):
@@ -94,6 +97,11 @@ def load_helper_settings(env=None):
     am_model = env.get("GAFFER_AM_MODEL")
     if am_model:
         h.models["am"] = am_model
+    # Per-role override (story 24: swapping one role's model is a config change).
+    for r in HELPER_ROLES:
+        per_role = env.get(f"GAFFER_HELPER_MODEL_{r.upper()}")
+        if per_role:
+            h.models[r] = per_role
     raw = env.get("GAFFER_FETCH_ALLOWLIST", "").strip()
     if raw:
         h.allowlist = {d.strip().lower() for d in raw.replace(",", " ").split() if d.strip()}

@@ -87,8 +87,9 @@ class ReportWriterTest(unittest.TestCase):
         self.w.write("availability", "AVAIL BODY", HEADER)
         other = ReportWriter(self.tmp, gw=3)
         other.write("market", "OLD", HEADER)
-        with open(os.path.join(self.tmp, "gw04", "decision-log.md"), "w") as f:
-            f.write("not a helper report")
+        for stray in ("decision-log.md", "scout-log.md", "draft.md"):
+            with open(os.path.join(self.tmp, "gw04", stray), "w") as f:
+                f.write("not a helper report")
         got = read_reports(self.tmp, 4)
         self.assertEqual(list(got), ["availability"])
         self.assertIn("AVAIL BODY", got["availability"])

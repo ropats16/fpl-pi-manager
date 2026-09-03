@@ -91,6 +91,12 @@ class HelperCmdTest(unittest.TestCase):
             self.assertIn("helper failed: OSError: openrouter down, coverage: none", f.read())
         self.assertIn("status=failed", self.out.getvalue())
 
+    def test_unknown_search_provider_is_a_config_error_at_wiring_time(self):
+        self.env["GAFFER_SEARCH_PROVIDER"] = "brave"
+        with self.assertRaises(ValueError) as cm:
+            self._run(["availability"])
+        self.assertIn("brave", str(cm.exception))
+
     def test_am_role_runs_on_the_third_family_model(self):
         rc, t = self._run(["am"])
         self.assertEqual(rc, 0)

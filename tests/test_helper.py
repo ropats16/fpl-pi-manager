@@ -207,7 +207,7 @@ class CeilingTest(HelperHarness):
         replies = [_fetch(FPL, "c1"), _fetch(FFS, "c2"), _fetch(FPL, "c3"), "Partial."]
         res, t, _ = self._run(replies, caps=dict(CAPS, turns=2))
         self._assert_cap(res, t, "turns")
-        self.assertEqual(len(t.llm_requests), 3)      # 2 turns + the write-up
+        self.assertEqual(len(t.llm_requests), 2)      # the write-up is the 2nd turn
         # The model omitted the line, so the loop appended it.
         self.assertIn("coverage incomplete: turns ceiling hit", self._report(res))
 

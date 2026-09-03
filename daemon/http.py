@@ -12,30 +12,52 @@ import urllib.request
 
 
 class Response:
-    __slots__ = ("status", "body")
+    __slots__ = ("status", "body", "headers")
 
-    def __init__(self, status, body):
+    def __init__(self, status, body, headers=None):
         self.status = status
         self.body = body  # bytes
+        self.headers = {k.lower(): v for k, v in (headers or {}).items()}
 
     def json(self):
         return json.loads(self.body.decode("utf-8"))
 
 
-class UrllibTransport:
-    """Real transport over urllib. GET/POST only — no other verbs are used."""
+DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024
 
-    def __init__(self, timeout=30):
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: the 3xx comes back as a Response with its
+    Location header, and the caller decides. The fetch tool (#54) re-checks
+    the allowlist on every hop, so a poisoned allowlisted page cannot bounce
+    the daemon to a host it may not fetch (#10 §5). Telegram and OpenRouter
+    never redirect, so nothing else is affected."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class UrllibTransport:
+    """Real transport over urllib. GET/POST only — no other verbs are used.
+    Redirects are never followed (see _NoRedirect) and every body read is
+    capped at `max_body_bytes` on the wire (a 2 GB Pi must not buffer a
+    runaway response), so the size cap is a mechanism, not a hope."""
+
+    def __init__(self, timeout=30, max_body_bytes=DEFAULT_MAX_BODY_BYTES):
         self.timeout = timeout
+        self.max_body_bytes = max_body_bytes
+        self._opener = urllib.request.build_opener(_NoRedirect())
 
     def request(self, method, url, headers=None, body=None):
         req = urllib.request.Request(url, data=body, method=method,
                                      headers=headers or {})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return Response(status=resp.status, body=resp.read())
+            with self._opener.open(req, timeout=self.timeout) as resp:
+                return Response(status=resp.status, body=resp.read(self.max_body_bytes),
+                                headers=dict(resp.headers))
         except urllib.error.HTTPError as e:
-            return Response(status=e.code, body=e.read())
+            return Response(status=e.code, body=e.read(self.max_body_bytes),
+                            headers=dict(e.headers or {}))
 
 
 def _json_response(obj):
@@ -77,8 +99,10 @@ class FakeTransport:
       in `search_requests` and answered with `search_reply` (never popped from
       the helper's reply queue);
     - `pages` maps fetchable URLs (exact, or sans query string) to canned
-      bodies; any other GET raises — so an off-allowlist fetch that *did* reach
-      the wire is loud, and `requests` is the log tests assert on.
+      bodies — a str/bytes body, or a dict `{"status", "body", "headers"}` to
+      fake a redirect or an error status; any other GET raises — so an
+      off-allowlist fetch that *did* reach the wire is loud, and `requests` is
+      the log tests assert on.
     """
 
     def __init__(self, updates_batches=None, llm_reply="ok", llm_replies=None,
@@ -135,6 +159,11 @@ class FakeTransport:
             if page is None:
                 page = self.pages.get(url.split("?", 1)[0])
             if page is not None:
+                if isinstance(page, dict):
+                    body = page.get("body", "")
+                    body = body.encode("utf-8") if isinstance(body, str) else body
+                    return Response(status=page.get("status", 200), body=body,
+                                    headers=page.get("headers"))
                 body = page.encode("utf-8") if isinstance(page, str) else page
                 return Response(status=200, body=body)
         raise AssertionError(f"unexpected request to {url}")
