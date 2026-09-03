@@ -247,6 +247,20 @@ class FailureTest(HelperHarness):
         self.assertEqual(res.status, "failed")
         self.assertIn("TimeoutError: llm timeout", self._report(res))
 
+    def test_output_cut_off_by_reasoning_is_nudged_once_for_the_report(self):
+        # Live GLM-5.3-flash run: reasoning spent the whole max_tokens, content "".
+        cut = {"role": "assistant", "content": "", "finish_reason": "length"}
+        res, t, _ = self._run([_fetch(FPL, "c1"), cut, REPORT])
+        self.assertEqual(res.status, "ok")
+        self.assertEqual(len(t.llm_requests), 3)
+        self.assertIn("output limit", t.llm_requests[-1]["messages"][-1]["content"])
+        self.assertEqual(t.llm_requests[-1]["max_tokens"], 8000)
+        self.assertEqual(len(self._events("helper_cut_off")), 1)
+        # A second cut-off is not chased: it is the failure it is.
+        res2, _, _ = self._run([cut, cut], gw=5)
+        self.assertEqual(res2.status, "failed")
+        self.assertIn("empty report", self._report(res2))
+
     def test_empty_report_is_a_failure_not_a_blank_file(self):
         res, _, _ = self._run(["   "])
         self.assertEqual(res.status, "failed")
