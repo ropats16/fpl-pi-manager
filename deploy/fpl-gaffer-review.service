@@ -1,0 +1,36 @@
+[Unit]
+Description=FPL Gaffer post-GW review (settled-GW check -> code-graded scorecard + learnings)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gaffer
+WorkingDirectory=/opt/fpl-gaffer
+# Post-GW review wake (#21): a cheap events check against the FPL bootstrap that
+# spends LLM tokens ONLY once per finished gameweek. Outside that (no newly
+# settled GW) it logs review_quiet and sends nothing. When a GW settles it grades
+# the call from code-computed numbers (projections snapshot vs actuals, captain
+# vs best-in-XI, transfer nets, bench calls) — the model never scores itself —
+# emits the review, records a learnings block, and appends to the decision log.
+ExecStart=/usr/bin/python3 -m daemon review
+
+# The review thinks (it writes the retrospective prose + learnings block), so
+# like the brief it loads BOTH the Telegram token and the OpenRouter key.
+LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
+LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key
+
+# Non-secret config outside every gaffer-writable path (numeric allowlist,
+# FPL_ENTRY_ID). (#10 §2)
+EnvironmentFile=-/etc/fpl-gaffer/gaffer.env
+
+# Hardening — same defense-in-depth as the daemon/watch/brief; the review writes
+# only its state (data/review-state.json) + the decision log under the repo.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/fpl-gaffer
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=256M

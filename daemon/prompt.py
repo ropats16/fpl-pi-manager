@@ -240,7 +240,8 @@ def select_playbook(user_text):
     """Route a message to today's playbook. The T−2h final check -> deadline-final;
     other deadline work -> deadline-brief; post-gameweek retrospectives ->
     post-gw-review; a strategy question (backtest, compare, is-it-worth) ->
-    analysis, the one playbook that ends with a ```learnings block (#20);
+    analysis — analysis and post-gw-review are the two playbooks that end with a
+    ```learnings block (#20/#21);
     everything else (the common ad-hoc status question) -> squad-review, the
     conservative default that keeps a stray message grounded rather than
     mis-routed. The brief wake (#18) drives the two deadline playbooks via its

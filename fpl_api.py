@@ -24,7 +24,11 @@ PLAYER_FIELDS = [
 ]
 TEAM_FIELDS = ["id", "name", "short_name", "strength_attack_home",
                "strength_attack_away", "strength_defence_home", "strength_defence_away"]
-EVENT_FIELDS = ["id", "name", "deadline_time", "finished", "is_current", "is_next"]
+EVENT_FIELDS = ["id", "name", "deadline_time", "finished", "data_checked",
+                "is_current", "is_next"]
+# Per-player gameweek actuals from /event/{gw}/live/ (the post-GW review, #21).
+LIVE_FIELDS = ["minutes", "total_points", "goals_scored", "assists",
+               "clean_sheets", "bonus"]
 FIXTURE_FIELDS = ["id", "event", "team_h", "team_a", "team_h_difficulty",
                   "team_a_difficulty", "kickoff_time", "finished",
                   "team_h_score", "team_a_score"]
@@ -118,6 +122,41 @@ def distill_fixtures(raw):
         "fetched_at": now_iso(),
         "fixtures": [{k: f.get(k) for k in FIXTURE_FIELDS} for f in raw],
     }
+
+
+def distill_live(raw):
+    """/event/{gw}/live/ payload -> {element id: {LIVE_FIELDS}}. Pure; a
+    malformed element (no id / no stats) is skipped, never raised."""
+    out = {}
+    for el in (raw or {}).get("elements", []) or []:
+        pid = el.get("id")
+        stats = el.get("stats") or {}
+        if not isinstance(pid, int):
+            continue
+        out[pid] = {k: stats.get(k) for k in LIVE_FIELDS}
+    return out
+
+
+def player_index(bootstrap_snap):
+    """Distilled bootstrap -> {element id: {"web_name", "pos", "team"}} where
+    pos is GKP/DEF/MID/FWD and team the club short_name. The join table the
+    review uses to name live actuals and resolve synthetic squad ids."""
+    clubs = {t["id"]: t.get("short_name") for t in bootstrap_snap.get("teams", [])}
+    return {p["id"]: {"web_name": p.get("web_name"),
+                      "pos": POS_BY_TYPE.get(p.get("element_type"), "???"),
+                      "team": clubs.get(p.get("team"), "???")}
+            for p in bootstrap_snap.get("players", []) if isinstance(p.get("id"), int)}
+
+
+def fetch_actuals(gw, entry_id=None, bootstrap_snap=None):
+    """The post-GW review's fetch (#21): live per-player GW stats, the entry's
+    fielded picks for the GW (None when no entry id is configured — the caller
+    falls back to season state), and the player index. `bootstrap_snap` may be
+    passed to reuse a snapshot fetched earlier in the same wake."""
+    snap = bootstrap_snap or distill_bootstrap(get("/bootstrap-static/"))
+    live = distill_live(get(f"/event/{gw}/live/"))
+    picks = get(f"/entry/{entry_id}/event/{gw}/picks/") if entry_id else None
+    return {"live": live, "picks": picks, "players": player_index(snap)}
 
 
 def diff_snapshots(old, new):

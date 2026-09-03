@@ -57,11 +57,14 @@ sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-watch.service  /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-watch.timer    /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-brief.service  /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-brief.timer    /etc/systemd/system/
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-review.service /etc/systemd/system/
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-review.timer   /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fpl-gaffer.service
 sudo systemctl enable --now fpl-gaffer-pull.timer
 sudo systemctl enable --now fpl-gaffer-watch.timer
 sudo systemctl enable --now fpl-gaffer-brief.timer
+sudo systemctl enable --now fpl-gaffer-review.timer
 ```
 
 Add `github-token` and `fpl-cookie` credentials the same way (step 4) when the
@@ -127,6 +130,42 @@ systemctl list-timers fpl-gaffer-brief.timer
 sudo systemctl start fpl-gaffer-brief.service     # force a wake now
 journalctl -u fpl-gaffer-brief -n 20              # brief_wake / brief_quiet / brief_draft_sent / brief_acted
 ```
+
+## Post-GW review (#21)
+
+`fpl-gaffer-review.timer` wakes `python3 -m daemon review` **~4-hourly**
+(`02,06,10,14,18,22:25` UTC). Each wake is a cheap events check against the FPL
+bootstrap: it looks for a gameweek that has newly **finished** (and had its bonus
+`data_checked`), and only then spends LLM tokens — **once per settled GW**. Every
+other tick logs `review_quiet` and sends nothing (bonus/`data_checked` can lag
+the last whistle by hours, so it keeps checking rather than firing once). When a
+GW settles it pulls the actuals, sets them against the **projection snapshot the
+brief wake froze** for that GW (`data/projections-gwNN.csv`) and the recorded
+decision, and grades the call — projections vs actuals, captain vs best-in-XI,
+transfer nets, bench calls — entirely in **code** (the model never scores
+itself). The gaffer then writes the luck-vs-process review + a `learnings` block,
+which the daemon appends to `reports/gwNN/decision-log.md`. Like the brief it
+thinks, so this unit loads **both** the `telegram-token` and the `openrouter-key`
+credentials.
+
+Review state persists in `data/review-state.json` (gitignored) — the last GW
+reviewed, so a settled GW is graded exactly once and re-sends only if the
+Telegram send failed. The entry (team) id used to pull the fielded picks comes
+from `FPL_ENTRY_ID` in `gaffer.env` (public, non-secret); left unset the review
+falls back to the season-state squad.
+
+```sh
+systemctl list-timers fpl-gaffer-review.timer
+sudo systemctl start fpl-gaffer-review.service    # force a wake now
+journalctl -u fpl-gaffer-review -n 20             # review_wake / review_quiet / review_sent
+```
+
+> The `review` units are **new**: the pull path only restarts the running daemon,
+> it does not install units. So the one-time `cp` of
+> `fpl-gaffer-review.{service,timer}` into `/etc/systemd/system/` plus
+> `sudo systemctl enable --now fpl-gaffer-review.timer` must be run by hand on the
+> Pi once (as in the bootstrap block above); thereafter it self-heals via the
+> timer like the others.
 
 ## Applying updates (self-test-gated auto-reload)
 
