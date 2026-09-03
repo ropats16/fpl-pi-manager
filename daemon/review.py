@@ -756,7 +756,7 @@ def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
     # block; append dedupes on lesson so a send-failure retry can't double-write.
     if learnings is not None:
         text = record_learnings(learnings, reply, f"post-GW review for GW{gw}",
-                                logger, now=now, record=True)
+                                logger, now=now, record=True, gw=gw)
     else:
         text = reply
     stray_plan, without_plan = parse_plan(text)
