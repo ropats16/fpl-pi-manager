@@ -33,9 +33,12 @@ def estimate_tokens(text):
     return (len(text) * _TOKEN_NUM + _TOKEN_DEN - 1) // _TOKEN_DEN
 
 
-def _char_budget(cap_tokens):
+def char_budget(cap_tokens):
     """Max chars whose estimate stays within cap_tokens (inverse of estimate_tokens)."""
     return cap_tokens * _TOKEN_DEN // _TOKEN_NUM
+
+
+_char_budget = char_budget
 
 
 # --- name join: synthetic squad ids -> real projection rows ---------------------------

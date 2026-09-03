@@ -9,18 +9,22 @@ import sys
 import tempfile
 
 import fpl_api
+from datetime import datetime, timezone
+
 from daemon.actuator import ManualApplyActuator
-from daemon.brief import run_brief
+from daemon.brief import next_deadline, run_brief
 from daemon.config import Config, load_config, load_notify_config
-from daemon.http import FakeTransport, UrllibTransport
+from daemon.helper import REPORT_CAP_TOKENS, ROLE_FILES, run_helper
+from daemon.http import FakeTransport, UrllibTransport, tool_call_message
 from daemon.learnings import LearningsLog
 from daemon.llm import DEFAULT_BASE_URL
 from daemon.logging_setup import StructuredLogger
 from daemon.loop import poll_once, run
 from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
+from daemon.reports import ReportWriter
 from daemon.review import ReviewStore, run_review
-from daemon.runtime import build_stack
+from daemon.runtime import build_helper_tools, build_stack
 from daemon.telegram import Telegram
 from daemon.watch import run_watch
 
@@ -116,6 +120,70 @@ _SELFTEST_LEARNINGS_REPLY = (
     "```")
 
 
+_SELFTEST_FPL = "https://fantasy.premierleague.com/api/bootstrap-static/"
+_SELFTEST_REPORT = (
+    "**Haaland** — fit, full training (SELFTEST canned FFS team news, 2026-09-03). "
+    "Judgment: nailed.\n\n"
+    "wanted source: evil.example — a fan blog the search surfaced; not on the allowlist.\n\n"
+    "Coverage: checked FPL flags (official API) + FFS team news; searched Gordon, "
+    "found nothing.")
+
+
+def _selftest_helper(cfg):
+    """The #54 acceptance demo, offline: one availability analyst runs as a tool
+    loop through the fake transport — an allowlisted fetch, the same URL again
+    (served from cache), an off-allowlist fetch (refused before any request), a
+    web search, then the report — and writes one headed, write-once report into
+    a temp GW folder. Prints the report path, fetch/search counts, cost estimate
+    and PASS/FAIL. Returns (ok, lines)."""
+    tmp = tempfile.mkdtemp(prefix="gaffer-selftest-helper-")
+    gw = 4
+    transport = FakeTransport(
+        llm_replies=[tool_call_message("fetch", {"url": _SELFTEST_FPL}, "c1"),
+                     tool_call_message("fetch", {"url": _SELFTEST_FPL}, "c2"),
+                     tool_call_message("fetch", {"url": "https://evil.example/x"}, "c3"),
+                     tool_call_message("search", {"query": "Gordon knock Newcastle"}, "s1"),
+                     _SELFTEST_REPORT],
+        pages={_SELFTEST_FPL: '{"elements": [{"web_name": "Haaland", "status": "a"}]}'},
+        search_reply="1. Gordon fit — bbc.co.uk/sport/selftest — 2026-09-02",
+        usage={"prompt_tokens": 3000, "completion_tokens": 400})
+    logbuf = io.StringIO()
+    _, llm, logger = build_stack(cfg, transport, logbuf)
+    h = cfg.helpers
+    fetcher, searcher = build_helper_tools(cfg, transport, llm, logger)
+    writer = ReportWriter(os.path.join(tmp, "reports"), gw, logger=logger,
+                          cap_tokens=REPORT_CAP_TOKENS["availability"])
+    res = run_helper("availability", llm, h.models["availability"],
+                     os.path.join(REPO_ROOT, "agent"),
+                     os.path.join(REPO_ROOT, "season-state.json"), gw,
+                     fetcher, searcher, writer, h.caps, logger,
+                     projections_path=os.path.join(REPO_ROOT, "fixtures",
+                                                   "projections-sample.csv"))
+    events = [json.loads(l) for l in logbuf.getvalue().splitlines()]
+    kinds = {e["event"] for e in events}
+    gets = [u for m, u in transport.requests if m == "GET"]
+    written = bool(res.path) and os.path.exists(res.path)
+    text = ""
+    if written:
+        with open(res.path, encoding="utf-8") as f:
+            text = f.read()
+    headed = text.startswith("---\nrole: availability\n") and "status: ok" in text
+    one_request = gets == [_SELFTEST_FPL]           # cached repeat + refused domain = 1 GET
+    refused = not any("evil.example" in u for u in gets)
+    searched = len(transport.search_requests) == 1
+    costed = res.cost_usd > 0 and all("cost_usd" in e for e in events if e["event"] == "llm_call")
+    ok = (res.status == "ok" and written and headed and one_request and refused
+          and searched and costed and {"helper_start", "llm_call", "fetch",
+                                       "fetch_refused", "search", "report_written",
+                                       "helper_done"} <= kinds)
+    lines = [json.dumps(e) for e in events]
+    lines.append(f"helper: role=availability model={res.model} status={res.status} "
+                 f"report={res.path} fetches={res.fetches} requests={res.requests} "
+                 f"searches={res.searches} turns={res.turns} cost=${res.cost_usd:.5f} "
+                 f"one-request={one_request} off-allowlist-refused={refused}")
+    return ok, lines
+
+
 def run_selftest(out=None):
     """Offline demo of the #16 + #20 acceptance paths in three wakes: a squad
     question is answered from an assembled, grounded prompt; an ad-hoc analysis
@@ -174,7 +242,15 @@ def run_selftest(out=None):
               f"grounded={grounded}, no-raw-json={clean}, within-25k={bounded}\n")
     out.write(f"learnings: recorded={recorded}, recalled={recalled}, "
               f"block-stripped={stripped}\n")
-    out.write(f"selftest: {'PASS' if ok else 'FAIL'} (events: {sorted(kinds)})\n")
+
+    # #54: one analyst as a tool loop, offline, into a temp GW folder.
+    helper_ok, helper_lines = _selftest_helper(cfg)
+    for line in helper_lines:
+        out.write(line + "\n")
+    ok = ok and helper_ok
+
+    out.write(f"selftest: {'PASS' if ok else 'FAIL'} (events: {sorted(kinds)}, "
+              f"helper={'PASS' if helper_ok else 'FAIL'})\n")
     return 0 if ok else 1
 
 
@@ -339,6 +415,82 @@ def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
                       now=now)
 
 
+def _current_gw(state_path):
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            return int(json.load(f).get("current_gw"))
+    except Exception:                     # noqa: BLE001 — missing/corrupt state -> None
+        return None
+
+
+def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
+                   now=None):
+    """`daemon helper <role> [--gw N]` — run one helper role by name as a
+    bounded tool loop (#54) and write its report into the next gameweek's
+    report folder. Thinks (full config incl. the LLM key; the Odds API key if
+    provisioned). The GW is the next unfinished FPL deadline (like the brief),
+    overridable with --gw; falls back to the season-state current_gw if the
+    events fetch fails. A helper failure is a stub report and exit 0 — only a
+    bad invocation (unknown role) is non-zero."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    args = list(args or [])
+    role = args[0] if args and not args[0].startswith("--") else ""
+    if role not in ROLE_FILES:
+        out.write(f"helper: unknown role {role!r}; known roles: "
+                  f"{', '.join(ROLE_FILES)}\n")
+        return 2
+    gw = None
+    if "--gw" in args:
+        try:
+            gw = int(args[args.index("--gw") + 1])
+        except (IndexError, ValueError):
+            out.write("helper: --gw needs an integer\n")
+            return 2
+
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    _, llm, logger = build_stack(cfg, transport, out)
+    state_path = _state_path(env)
+    now = now or datetime.now(timezone.utc)
+
+    if gw is None:
+        if fetch_events is None:
+            def fetch_events():
+                return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))["events"]
+        try:
+            nd = next_deadline(fetch_events(), now)
+            gw = nd[0] if nd else None
+        except Exception as e:            # noqa: BLE001 — fall back to season state
+            logger.event("helper_events_error", error=type(e).__name__, detail=str(e))
+        if gw is None:
+            gw = _current_gw(state_path)
+    if gw is None:
+        out.write("helper: could not determine the gameweek (pass --gw N)\n")
+        return 2
+
+    h = cfg.helpers
+    writer = ReportWriter(_reports_dir(env), gw, logger=logger,
+                          cap_tokens=REPORT_CAP_TOKENS.get(role, 700))
+    if writer.exists(role):
+        # Write-once: do not spend a run whose report could not be written.
+        logger.event("report_refused", gw=gw, reason="exists", path=writer.path_for(role))
+        out.write(f"helper: {writer.path_for(role)} already written (write-once); "
+                  "nothing run\n")
+        return 0
+    fetcher, searcher = build_helper_tools(cfg, transport, llm, logger)
+    res = run_helper(role, llm, h.models[role],
+                     env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent")),
+                     state_path, gw, fetcher, searcher, writer, h.caps, logger,
+                     projections_path=_projections_path(env))
+    out.write(f"helper: role={role} gw={gw} status={res.status} report={res.path} "
+              f"fetches={res.fetches} requests={res.requests} searches={res.searches} "
+              f"turns={res.turns} cost=${res.cost_usd:.5f}"
+              + (f" cap={res.cap}" if res.cap else "")
+              + (f" reason={res.reason}" if res.reason else "") + "\n")
+    return 0
+
+
 def main(argv):
     if len(argv) > 1 and argv[1] == "selftest":
         return run_selftest()
@@ -350,6 +502,8 @@ def main(argv):
         return run_brief_cmd()
     if len(argv) > 1 and argv[1] == "review":
         return run_review_cmd()
+    if len(argv) > 1 and argv[1] == "helper":
+        return run_helper_cmd(argv[2:])
     return run_daemon()
 
 

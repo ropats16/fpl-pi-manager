@@ -42,6 +42,28 @@ class SelftestTest(unittest.TestCase):
         self.assertIn("recalled=True", out.getvalue())
         self.assertIn("block-stripped=True", out.getvalue())
 
+    def test_selftest_demonstrates_one_analyst_tool_loop_offline(self):
+        # The #54 acceptance demo: report path, fetch/search counts, cost
+        # estimate, and the two boundary facts (one request for a repeated URL,
+        # off-allowlist refused before the wire) all printed, and PASS.
+        out = io.StringIO()
+        rc = run_selftest(out=out)
+        text = out.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("helper: role=availability", text)
+        self.assertIn("status=ok", text)
+        self.assertIn("report=", text)
+        self.assertIn("fetches=3 requests=1 searches=1", text)
+        self.assertIn("cost=$0.0", text)
+        self.assertIn("one-request=True off-allowlist-refused=True", text)
+        self.assertIn("helper=PASS", text)
+        self.assertIn('"event": "fetch_refused"', text)
+
+    def test_selftest_helper_report_never_lands_in_the_repo(self):
+        run_selftest(out=io.StringIO())
+        self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, "agent", "reports",
+                                                     "gw04", "availability.md")))
+
     def test_selftest_never_writes_the_committed_learnings_log(self):
         # The diary is append-only repo content; a demo run must not grow it.
         # The selftest works on a tempdir copy — this is the guard on that.

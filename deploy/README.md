@@ -69,7 +69,19 @@ sudo systemctl enable --now fpl-gaffer-review.timer
 
 Add `github-token` and `fpl-cookie` credentials the same way (step 4) when the
 auto-PR flow (#11 §4) and actuator (#13/#14) are provisioned; the daemon simply
-has no such credential until then.
+has no such credential until then. The **5th credential, `odds-api-key`** (#54),
+is optional the same way — only the fixtures/odds helper's fetch of
+`api.the-odds-api.com` uses it, and without it that one fetch degrades to an
+error text the helper reports as a coverage gap:
+
+```sh
+printf '%s' 'PASTE_ODDS_API_KEY' | sudo systemd-creds encrypt --name=odds-api-key - /etc/credstore.encrypted/odds-api-key
+```
+
+Then add `LoadCredentialEncrypted=odds-api-key:/etc/credstore.encrypted/odds-api-key`
+to the units that run helpers once #56 wires the fan-out into the brief wake
+(a `LoadCredentialEncrypted` line for a file that does not exist fails the unit,
+so the line is not in the shipped units until the key is provisioned).
 
 ## Verify supervision (acceptance criteria)
 
@@ -166,6 +178,29 @@ journalctl -u fpl-gaffer-review -n 20             # review_wake / review_quiet /
 > `sudo systemctl enable --now fpl-gaffer-review.timer` must be run by hand on the
 > Pi once (as in the bootstrap block above); thereafter it self-heals via the
 > timer like the others.
+
+## Helper tool loop (#54)
+
+`python3 -m daemon helper <role> [--gw N]` runs one helper role (`availability`,
+`fixtures`, `quality`, `market`, `scout`, `am`) as a bounded tool loop on its mapped
+model and writes `agent/reports/gwNN/<role>.md` for the next FPL deadline's GW
+(write-once — delete the file to re-run). No timer yet (#56/#57 wire it into the
+draft wake and the daily Scout); to run one by hand on the Pi with the daemon's
+config and credentials:
+
+```sh
+sudo systemd-run --uid=gaffer --gid=gaffer --pipe --wait --collect \
+  -p WorkingDirectory=/opt/fpl-gaffer -p EnvironmentFile=/etc/fpl-gaffer/gaffer.env \
+  -p LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token \
+  -p LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key \
+  /usr/bin/python3 -m daemon helper availability
+# -> jsonl events (llm_call with tokens + cost, fetch / fetch_refused / search,
+#    cap_hit, report_written) then one `helper: role=… status=… report=… cost=$…` line
+```
+
+Ceilings and the model map are `gaffer.env` overrides (`GAFFER_HELPER_MAX_*`,
+`GAFFER_HELPER_MODEL`, `GAFFER_AM_MODEL`, `GAFFER_FETCH_ALLOWLIST`,
+`GAFFER_PRICE_TABLE`) — see `gaffer.env.example`; defaults are the #51 decisions.
 
 ## Applying updates (self-test-gated auto-reload)
 
