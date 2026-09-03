@@ -32,6 +32,7 @@ from daemon.prompt import char_budget
 
 ODDS_HOST = "api.the-odds-api.com"
 FETCH_MAX_TOKENS = 8000
+SEARCH_MAX_TOKENS = 4000    # the sub-call reasons too; 1500 truncated every live result
 MAX_REDIRECTS = 5
 _REDIRECTS = (301, 302, 303, 307, 308)
 _BLOCK_TAGS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
@@ -237,7 +238,7 @@ class ExaSearch:
                 [{"role": "system", "content": _SEARCH_SYSTEM},
                  {"role": "user", "content": query}],
                 plugins=[{"id": "web", "engine": "exa", "max_results": self._max_results}],
-                model=self._model, role=role or "search", max_tokens=1500)
+                model=self._model, role=role or "search", max_tokens=SEARCH_MAX_TOKENS)
         except Exception as e:       # noqa: BLE001 — provider down = error text, not a crash
             if self._logger is not None:
                 self._logger.event("search_error", role=role, query=query,

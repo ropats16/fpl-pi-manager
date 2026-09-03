@@ -36,7 +36,10 @@ REPORT_CAP_TOKENS = {"availability": 700, "fixtures": 700, "quality": 700,
                      "market": 700, "am": 500, "scout": 250}
 SCOUT_LOG_TAIL_TOKENS = 1000
 PRIOR_REPORT_TOKENS = 700
-HELPER_MAX_TOKENS = 2500          # per assistant turn (report ≈ 700 + reasoning)
+# Per assistant turn. Reasoning models (glm-5.3-flash thinks before it writes)
+# spend hidden reasoning tokens out of this budget: the first live run hit a
+# 2500 cap with zero visible content. 8k at flash prices is ~$0.002 a turn.
+HELPER_MAX_TOKENS = 8000
 COVERAGE_INCOMPLETE = "coverage incomplete"
 
 _CONTRACT = """## Coverage contract and output format
@@ -58,6 +61,10 @@ at write time). The report must:
 "searched X, found nothing" for every gap;
 - list any page you wanted but could not fetch as `wanted source: <domain> — <why>`.
 """
+
+_CUT_OFF = ("Your last reply hit the output limit before any report text arrived. "
+            "Reply again with the report only — plain markdown, no preamble, no "
+            "tool calls — kept under the size in the contract.")
 
 _WRITE_UP = ("You have reached the {ceiling} ceiling for this run ({detail}). Stop "
              "gathering. Reply now with your report using only what you already "
@@ -194,6 +201,7 @@ def run_helper(role, llm, model, workspace_root, state_path, gw, fetcher, search
     detail = ""
     report = None
     unchecked = []
+    nudged = False
 
     # Tool table: name -> (ceiling key, tool callable). Counts live in `used`.
     used = {"fetches": 0, "searches": 0}
@@ -214,6 +222,14 @@ def run_helper(role, llm, model, workspace_root, state_path, gw, fetcher, search
                              max_tokens=HELPER_MAX_TOKENS)
             res.turns += 1
             if not reply.tool_calls:
+                if (not reply.content.strip() and reply.finish_reason == "length"
+                        and not nudged):
+                    # Output budget spent on reasoning, nothing visible: ask once
+                    # for the report itself (costs a turn, never loops).
+                    nudged = True
+                    logger.event("helper_cut_off", role=role, gw=gw, turns=res.turns)
+                    messages.append({"role": "user", "content": _CUT_OFF})
+                    continue
                 report = reply.content
                 break
             messages.append(reply.message)

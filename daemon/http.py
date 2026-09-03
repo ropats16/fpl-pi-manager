@@ -123,12 +123,14 @@ class FakeTransport:
         self.requests = []      # [(method, url)] — every request, in order
 
     def _chat_response(self, reply):
+        finish = None
         if isinstance(reply, dict):
             message = dict(reply)
             message.setdefault("role", "assistant")
+            finish = message.pop("finish_reason", None)   # fake a cut-off turn
         else:
             message = {"role": "assistant", "content": reply}
-        finish = "tool_calls" if message.get("tool_calls") else "stop"
+        finish = finish or ("tool_calls" if message.get("tool_calls") else "stop")
         return _json_response({
             "choices": [{"message": message, "finish_reason": finish}],
             "usage": dict(self.usage),
