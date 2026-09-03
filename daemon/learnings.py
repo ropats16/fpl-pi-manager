@@ -302,8 +302,13 @@ def render_learnings(entries):
         for e in entries or [])
 
 
-def record_learnings(log, reply_text, question, logger, now=None, record=True):
+def record_learnings(log, reply_text, question, logger, now=None, record=True,
+                     gw=None):
     """parse -> vet -> append, returning the text that may go to Telegram.
+
+    `gw` (optional) labels the diary entry; the #21 review passes the GW it
+    graded, since season-state's `current_gw` can lag the settled GW. Chat
+    replies leave it None and take the state's GW.
 
     The convenience seam for the reply loop. A reply with no block comes back
     untouched and logs nothing. A block that will not parse is stripped anyway
@@ -340,7 +345,7 @@ def record_learnings(log, reply_text, question, logger, now=None, record=True):
                      kind=(item.get("kind") if isinstance(item, dict) else None),
                      lesson=str(lesson)[:80])
     try:
-        appended, skipped = log.append(accepted, question, now=now)
+        appended, skipped = log.append(accepted, question, now=now, gw=gw)
     except Exception as e:           # noqa: BLE001 — see docstring
         logger.event("learnings_write_error", path=getattr(log, "path", None),
                      error=type(e).__name__, detail=str(e))

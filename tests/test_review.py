@@ -671,6 +671,21 @@ class RunReviewHarness(unittest.TestCase):
 
     # --- happy path ----------------------------------------------------------
 
+    def test_diary_entry_tagged_with_reviewed_gw_not_state_gw(self):
+        # season-state lags (GW1) while GW3 is being graded: the diary line must
+        # say GW03 — the review knows its GW, the state's current_gw is stale.
+        with open(self.state_path) as f:
+            state = json.load(f)
+        state["current_gw"] = 1
+        with open(self.state_path, "w") as f:
+            json.dump(state, f)
+        rc, _ = self._run()
+        self.assertEqual(rc, 0)
+        with open(self.diary) as f:
+            diary = f.read()
+        self.assertIn("[GW03]", diary)
+        self.assertNotIn("[GW01]", diary)
+
     def test_happy_path_sends_records_logs_and_marks(self):
         rc, tg = self._run()
         self.assertEqual(rc, 0)
