@@ -34,7 +34,9 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
     the deterministic approve/stop path runs before any LLM call (#18). When a
     `learnings` log is wired, an analysis reply's learnings block is vetted and
     recorded, and the block stripped, before anything else touches the text
-    (#20)."""
+    (#20). The other diary writer is the #21 review WAKE (daemon.review), never
+    a chat reply — a chat "how did I do?" has no code-computed scorecard to
+    ground a lesson on."""
     if msg.from_id not in cfg.allowlist:
         # Silent drop, no reply — replying confirms a live bot to a stranger.
         logger.event("drop", reason="not_allowlisted",
@@ -87,8 +89,9 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
 
     # The learnings diary (#20) reads the RAW reply and hands back the text with
     # its own machine block removed. Only a question that routed to the analysis
-    # playbook may WRITE — any other reply carrying a block is stripped and
-    # logged, so a poisoned report can't coach a squad-review answer into memory.
+    # playbook may WRITE from chat — any other reply carrying a block is stripped
+    # and logged, so a poisoned report can't coach a squad-review answer into
+    # memory (the #21 review wake writes on its own, scorecard-grounded path).
     # It runs before the plan parse so a reply carrying both blocks loses both;
     # the decision log below still records the full `reply`, because the repo
     # record wants what the gaffer actually said.

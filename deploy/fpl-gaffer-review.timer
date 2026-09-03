@@ -1,0 +1,16 @@
+[Unit]
+Description=FPL Gaffer post-GW review timer (settled-GW check, ~4-hourly)
+
+[Timer]
+# Every ~4 hours. The wake itself is a cheap events check against the FPL
+# bootstrap (#21); it spends LLM tokens ONLY the first time it sees a newly
+# finished gameweek and is silent (review_quiet, zero tokens) on every other
+# tick. A few ticks a day is plenty to notice a GW that settled — bonus points
+# and data_checked can lag the last whistle by hours, so we keep checking rather
+# than fire once.
+OnCalendar=*-*-* 02,06,10,14,18,22:25:00 UTC
+# Fire on next boot if the Pi slept through a scheduled wake — never miss a GW.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

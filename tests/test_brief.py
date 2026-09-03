@@ -347,6 +347,105 @@ class FetchFailureTest(BriefHarness):
         self.assertEqual(st.phase, "idle")                    # never advanced
 
 
+class ProjectionsSnapshotTest(BriefHarness):
+    """The brief freezes the GW's projection rows so the post-GW review (#21) can
+    grade the call on exactly what it was made on. Draft writes the first copy;
+    act overwrites it with the copy closest to the deadline."""
+
+    SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "fixtures", "projections-sample.csv")
+
+    def _snap_dir(self):
+        d = os.path.join(self._tmp.name, "snap")
+        return d, os.path.join(d, "projections-gw02.csv")
+
+    def _run(self, now, replies, projections_path, phase_setup=None):
+        if phase_setup:
+            phase_setup()
+        snap_dir, snap_file = self._snap_dir()
+        telegram = _Recorder()
+        pending = list(replies)
+
+        def llm_complete(messages):
+            return pending.pop(0)
+
+        rc = run_brief(fetch=lambda: EVENTS, llm_complete=llm_complete,
+                       assembler_factory=_Assembler, store=self.store,
+                       telegram=telegram, allowlist={42}, logger=self.logger,
+                       actuator=self.actuator, state_path=self.state_path,
+                       reports_dir=self.reports_dir,
+                       projections_path=projections_path, snapshot_dir=snap_dir,
+                       now=_dt(now))
+        return rc, telegram, snap_file
+
+    def _gw2_ids(self, path):
+        import csv
+        with open(path, newline="") as f:
+            return [r["gw"] for r in csv.DictReader(f)]
+
+    def test_draft_writes_only_gw2_rows(self):
+        reply = _brief_with_block(_plan())
+        rc, tg, snap = self._run("2026-08-28T12:00:00Z", [reply], self.SRC)
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(snap))
+        self.assertTrue(self._gw2_ids(snap))
+        self.assertTrue(all(g == "2" for g in self._gw2_ids(snap)))   # gw-2 only
+        ev = self.event("brief_projections_snapshot")
+        self.assertEqual(ev["gw"], 2)
+        self.assertEqual(ev["rows"], len(self._gw2_ids(snap)))
+        self.assertEqual(ev["path"], snap)
+
+    def test_act_overwrites_the_snapshot(self):
+        # An approved act (locked branch) re-freezes the snapshot at T−30m.
+        p = _plan()
+        self.store.set_pending(2, p)
+        self.store.approve()
+        self.store.save()
+        rc, tg, snap = self._run("2026-08-29T10:35:00Z", [], self.SRC)
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(snap))
+        self.assertTrue(all(g == "2" for g in self._gw2_ids(snap)))
+        self.assertIsNotNone(self.event("brief_projections_snapshot"))
+
+    def test_final_snapshots_too(self):
+        # T−2h is where the last real decision is made; it must freeze the
+        # projections it stood on, not leave the draft's copy to be graded.
+        p = _plan()
+        self.store.set_pending(2, p)
+        self.store.approve()
+        self.store.draft_sent = True
+        self.store.save()
+        rc, tg, snap = self._run("2026-08-29T09:00:00Z",
+                                 [_brief_with_block(dict(p))], self.SRC)
+        self.assertEqual(rc, 0)
+        self.assertIn("brief_final_sent", self.kinds())
+        self.assertTrue(os.path.exists(snap))
+
+    def test_no_write_act_still_snapshots(self):
+        self.store.set_pending(2, _plan())     # pending but never approved
+        self.store.save()
+        rc, tg, snap = self._run("2026-08-29T10:35:00Z", [], self.SRC)
+        self.assertEqual(rc, 0)
+        self.assertIn("brief_no_write", self.kinds())
+        self.assertTrue(os.path.exists(snap))
+
+    def test_missing_source_writes_nothing_but_brief_succeeds(self):
+        missing = os.path.join(self._tmp.name, "nope.csv")
+        reply = _brief_with_block(_plan())
+        rc, tg, snap = self._run("2026-08-28T12:00:00Z", [reply], missing)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(tg.sent), 1)                  # brief still went out
+        self.assertFalse(os.path.exists(snap))
+        self.assertEqual(self.event("brief_projections_snapshot")["rows"], 0)
+
+    def test_params_omitted_writes_nothing_and_no_event(self):
+        reply = _brief_with_block(_plan())
+        rc, tg = self.run_at("2026-08-28T12:00:00Z", [reply])   # no snapshot params
+        self.assertEqual(rc, 0)
+        self.assertIsNone(self.event("brief_projections_snapshot"))
+        self.assertIsNone(self.event("brief_projections_error"))
+
+
 class QuietTest(BriefHarness):
     def test_outside_any_window_is_quiet_and_spends_no_llm(self):
         calls = []

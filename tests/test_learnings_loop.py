@@ -55,6 +55,8 @@ def _workspace():
         f.write("ANALYSIS-PLAYBOOK: show the method, end with a learnings block.\n")
     with open(os.path.join(root, "playbooks", "squad-review.md"), "w") as f:
         f.write("SQUAD-PLAYBOOK: summarise grounded in the snapshot.\n")
+    with open(os.path.join(root, "playbooks", "post-gw-review.md"), "w") as f:
+        f.write("REVIEW-PLAYBOOK: grade the GW, end with a learnings block.\n")
     return root
 
 
@@ -312,6 +314,39 @@ class NonAnalysisQuestionTest(unittest.TestCase):
         [ev] = self.h.events("learnings_ignored")
         self.assertEqual((ev["reason"], ev["items"]), ("not_analysis", 2))
         self.assertEqual(self.h.events("learnings_recorded"), [])
+
+
+class PostGwReviewQuestionTest(unittest.TestCase):
+    """A chat "how did I do last gameweek?" routes to the post-gw-review
+    playbook — but the diary's second writer is the #21 review WAKE, which
+    grounds the model on a code-computed scorecard. A chat reply has no such
+    grounding, so a block riding on it is stripped and logged, never written:
+    the #20 single-chat-writer guard holds."""
+
+    def setUp(self):
+        self.h = _Harness().run(["how did I do last gameweek?"], [GOOD_REPLY])
+
+    def test_the_review_question_routed_to_the_review_playbook(self):
+        self.assertIn("REVIEW-PLAYBOOK", self.h.system_prompt(0))
+
+    def test_nothing_is_recorded_from_a_chat_review_reply(self):
+        self.assertEqual(self.h.file_text(), SEED)
+        [ev] = self.h.events("learnings_ignored")
+        self.assertEqual(ev["reason"], "not_analysis")
+        self.assertEqual(self.h.events("learnings_recorded"), [])
+
+    def test_the_block_is_stripped_before_telegram(self):
+        self.assertNotIn("```learnings", self.h.sent[0])
+        self.assertIn("worth it only against weak attacks", self.h.sent[0])
+
+    def test_a_squad_question_still_does_not_record(self):
+        # The guard is playbook-scoped, not "any block records": a plain status
+        # question keeps its block out of the diary.
+        h = _Harness().run(["how's my team looking?"], [GOOD_REPLY])
+        self.assertEqual(h.file_text(), SEED)
+        [ev] = h.events("learnings_ignored")
+        self.assertEqual(ev["reason"], "not_analysis")
+        self.assertEqual(h.events("learnings_recorded"), [])
 
 
 class UnwritableLogTest(unittest.TestCase):

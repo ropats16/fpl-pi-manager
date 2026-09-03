@@ -19,6 +19,7 @@ from daemon.logging_setup import StructuredLogger
 from daemon.loop import poll_once, run
 from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
+from daemon.review import ReviewStore, run_review
 from daemon.runtime import build_stack
 from daemon.telegram import Telegram
 from daemon.watch import run_watch
@@ -41,6 +42,18 @@ def _reports_dir(env):
                    os.path.join(REPO_ROOT, "agent", "reports"))
 
 
+def _data_dir(env):
+    """The gitignored machine-state dir: watch baseline, approval state, the
+    review state + the brief's projection snapshots all live here."""
+    return env.get("GAFFER_DATA_DIR", os.path.join(REPO_ROOT, "data"))
+
+
+def _projections_path(env):
+    """The pipeline's long-format projections.csv (gitignored data/)."""
+    return env.get("GAFFER_PROJECTIONS_PATH",
+                   os.path.join(REPO_ROOT, "data", "projections.csv"))
+
+
 def _learnings_path(env):
     """The #20 diary. Repo content (unlike the gitignored state files): it is the
     record of what the gaffer learned. Rohit reviews it in the repo; the per-wake
@@ -59,9 +72,7 @@ def build_assembler(env=None, approval_store_path=None):
     env = os.environ if env is None else env
     workspace = env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent"))
     state = _state_path(env)
-    projections = env.get("GAFFER_PROJECTIONS_PATH",
-                          os.path.join(REPO_ROOT, "data", "projections.csv"))
-    return Assembler(workspace, state, projections_path=projections,
+    return Assembler(workspace, state, projections_path=_projections_path(env),
                      approval_store_path=approval_store_path,
                      learnings_path=_learnings_path(env))
 
@@ -248,7 +259,84 @@ def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
                      assembler_factory=assembler_factory, store=store,
                      telegram=telegram, allowlist=cfg.allowlist, logger=logger,
                      actuator=actuator, state_path=state_path,
-                     reports_dir=reports_dir, now=now)
+                     reports_dir=reports_dir,
+                     projections_path=_projections_path(env),
+                     snapshot_dir=_data_dir(env), now=now)
+
+
+def _resolve_entry_id(env, state_path):
+    """The FPL entry (team) id the review pulls the fielded picks with (#21) —
+    public, non-secret. `FPL_ENTRY_ID` env override first, then the season-state
+    `entry_id`, else None (the review falls back to the season-state squad).
+    Tolerant int parse: any junk — a missing/corrupt state included — resolves to
+    None, never raises."""
+    raw = env.get("FPL_ENTRY_ID")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raw = None
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                raw = json.load(f).get("entry_id")
+        except Exception:                 # noqa: BLE001 — missing/corrupt state -> no id
+            raw = None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
+                   fetch_actuals=None, now=None):
+    """`daemon review` — the timer-driven post-GW review wake (#21). Like the
+    brief it thinks (full config incl. the LLM key), but it is even cheaper day
+    to day: a bare events check that spends tokens ONCE per finished gameweek and
+    is otherwise silent. It grades the settled GW from code-computed numbers (the
+    model never scores itself), records a ```learnings block, and appends the
+    review to the decision log. Review state lives in data/review-state.json
+    (gitignored); the projection snapshots it grades against were written by the
+    brief wake into the same data/ dir."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram, llm, logger = build_stack(cfg, transport, out)
+
+    state_path = _state_path(env)
+    reports_dir = _reports_dir(env)
+    review_state = env.get("GAFFER_REVIEW_STATE_PATH",
+                           os.path.join(_data_dir(env), "review-state.json"))
+    store = ReviewStore(review_state)
+    learnings = LearningsLog(_learnings_path(env), state_path=state_path)
+    entry_id = _resolve_entry_id(env, state_path)
+
+    approval_path = _approval_state_path(env)
+
+    def assembler_factory():
+        return build_assembler(env, approval_store_path=approval_path)
+
+    # One bootstrap snapshot per wake, shared by both default fetchers (the events
+    # check and — only if a GW settled — the actuals pull) so a quiet wake is a
+    # single request and a live one reuses the same snapshot.
+    boot = {}
+
+    def _bootstrap():
+        if "snap" not in boot:
+            boot["snap"] = fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))
+        return boot["snap"]
+
+    if fetch_events is None:
+        def fetch_events():
+            return _bootstrap()["events"]
+    if fetch_actuals is None:
+        def fetch_actuals(gw):
+            return fpl_api.fetch_actuals(gw, entry_id, bootstrap_snap=_bootstrap())
+
+    return run_review(fetch_events=fetch_events, fetch_actuals=fetch_actuals,
+                      llm_complete=llm.complete,
+                      assembler_factory=assembler_factory, store=store,
+                      telegram=telegram, allowlist=cfg.allowlist, logger=logger,
+                      learnings=learnings, state_path=state_path,
+                      reports_dir=reports_dir, snapshot_dir=_data_dir(env),
+                      now=now)
 
 
 def main(argv):
@@ -260,6 +348,8 @@ def main(argv):
         return run_watch_cmd()
     if len(argv) > 1 and argv[1] == "brief":
         return run_brief_cmd()
+    if len(argv) > 1 and argv[1] == "review":
+        return run_review_cmd()
     return run_daemon()
 
 

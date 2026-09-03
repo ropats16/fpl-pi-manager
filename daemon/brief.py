@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from daemon.plan import (append_decision_log, parse_plan, plan_summary,
                          plans_differ, record_decision)
 from daemon.prompt import estimate_tokens
+from daemon.review import snapshot_path, snapshot_projections
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -121,8 +122,26 @@ def _generate_plan(llm_complete, assembler_factory, user_text, logger, gw):
     return plan, text, reply
 
 
+def _snapshot(projections_path, snapshot_dir, gw, logger):
+    """Freeze the GW's projection rows so the post-GW review (#21) can grade the
+    call against exactly what it was made on. Draft writes the first copy; the
+    final and act overwrite it with the copy closest to the deadline. Best-effort: with either
+    path unset it does nothing (no event); any error logs brief_projections_error
+    and never blocks the brief."""
+    if not (projections_path and snapshot_dir):
+        return
+    try:
+        out_path = snapshot_path(snapshot_dir, gw)
+        rows = snapshot_projections(projections_path, gw, out_path)
+        logger.event("brief_projections_snapshot", gw=gw, rows=rows, path=out_path)
+    except Exception as e:               # noqa: BLE001 — a snapshot never blocks a brief
+        logger.event("brief_projections_error", gw=gw,
+                     error=type(e).__name__, detail=str(e))
+
+
 def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
-              logger, gw, reports_dir, now):
+              logger, gw, reports_dir, now, projections_path=None,
+              snapshot_dir=None):
     # If the block is missing even after the retry, the brief still goes out;
     # pending stays None so a `yes` can't approve half a protocol.
     plan, text, reply = _generate_plan(
@@ -137,18 +156,23 @@ def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
     # The FULL reply (plan block and all) is the repo record (§2); the lean
     # stripped text is what went to Telegram.
     append_decision_log(reports_dir, gw, "Deadline brief", reply, now=now)
+    # The send is out: freeze the projections the review will grade this call on.
+    _snapshot(projections_path, snapshot_dir, gw, logger)
     logger.event("brief_draft_sent", gw=gw, tokens=estimate_tokens(reply),
                  has_plan=plan is not None)
     return 0
 
 
 def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
-              logger, gw):
+              logger, gw, projections_path=None, snapshot_dir=None):
     new_plan, text, _ = _generate_plan(
         llm_complete, assembler_factory,
         f"final pre-deadline check for GW{gw}", logger, gw)
     approved = store.approved_plan
     has_chip = bool(new_plan and new_plan.get("chip"))
+    # The final is where the last real decision is made: freeze the projections
+    # it was made on (act overwrites again at T−30m only if they moved).
+    _snapshot(projections_path, snapshot_dir, gw, logger)
 
     if new_plan is None:
         # Unverifiable final: no machine plan even after a retry. The carry-void
@@ -207,12 +231,16 @@ def _state_captain(state_path):
     return None
 
 
-def _do_act(store, telegram, allowlist, logger, actuator, state_path, gw, now):
+def _do_act(store, telegram, allowlist, logger, actuator, state_path, gw, now,
+            projections_path=None, snapshot_dir=None):
     approved = store.approved_plan
     if store.phase in ("approved", "locked") and approved is not None:
         instructions = actuator.apply(approved, gw)
         record_decision(state_path, gw, approved, "locked", now=now)
         receipt = f"✅ GW{gw} locked: {plan_summary(approved)}"
+        # Overwrite the draft's snapshot with the copy closest to the deadline —
+        # the projections this locked call is actually being graded on (#21).
+        _snapshot(projections_path, snapshot_dir, gw, logger)
         if not _send_all(telegram, allowlist, f"{instructions}\n\n{receipt}",
                          logger, gw):
             return 1
@@ -226,6 +254,8 @@ def _do_act(store, telegram, allowlist, logger, actuator, state_path, gw, now):
     cap = _state_captain(state_path)
     msg = (f"⚠ GW{gw} locked with NO changes — no approval in time. "
            f"Last team stands{f', (C) {cap}' if cap else ''}, FT banks.")
+    # A no-write still fielded a team; snapshot the projections it stood on (#21).
+    _snapshot(projections_path, snapshot_dir, gw, logger)
     if not _send_all(telegram, allowlist, msg, logger, gw):
         return 1
     store.phase = "no_write"
@@ -235,10 +265,17 @@ def _do_act(store, telegram, allowlist, logger, actuator, state_path, gw, now):
 
 
 def run_brief(fetch, llm_complete, assembler_factory, store, telegram, allowlist,
-              logger, actuator, state_path, reports_dir, now=None):
+              logger, actuator, state_path, reports_dir, projections_path=None,
+              snapshot_dir=None, now=None):
     """One hourly wake. Returns a process exit code (0 ok, 1 the wake did not
     complete). Every external edge is injected so the whole path runs offline in
-    tests — same seam posture as run_watch (#17)."""
+    tests — same seam posture as run_watch (#17).
+
+    When both `projections_path` and `snapshot_dir` are set, the draft and act
+    touchpoints freeze the GW's projection rows into
+    `<snapshot_dir>/projections-gwNN.csv` so the post-GW review (#21) can grade
+    the call against exactly what it was made on; a snapshot failure is logged,
+    never fatal."""
     now = now or datetime.now(timezone.utc)
     logger.event("brief_wake")
     try:
@@ -266,12 +303,17 @@ def run_brief(fetch, llm_complete, assembler_factory, store, telegram, allowlist
     try:
         if action == "draft":
             return _do_draft(llm_complete, assembler_factory, store, telegram,
-                             allowlist, logger, gw, reports_dir, now)
+                             allowlist, logger, gw, reports_dir, now,
+                             projections_path=projections_path,
+                             snapshot_dir=snapshot_dir)
         if action == "final":
             return _do_final(llm_complete, assembler_factory, store, telegram,
-                             allowlist, logger, gw)
+                             allowlist, logger, gw,
+                             projections_path=projections_path,
+                             snapshot_dir=snapshot_dir)
         return _do_act(store, telegram, allowlist, logger, actuator, state_path,
-                       gw, now)
+                       gw, now, projections_path=projections_path,
+                       snapshot_dir=snapshot_dir)
     except Exception as e:               # noqa: BLE001 — LLM/state error: retry next tick
         # State is not advanced past this point on the failing action, so the
         # next hourly tick re-attempts the same window (never lose a wake).

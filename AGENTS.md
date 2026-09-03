@@ -66,9 +66,10 @@ evidence). The daemon strips that block before Telegram (same seam as ` ```plan 
 #18; a malformed one is stripped and logged, never sent), vets it, and appends what
 survives — one line per entry, `open(…, "a")` + fsync only — to
 `agent/memory/learnings.md`, a model-writable append-only diary
-(`GAFFER_LEARNINGS_PATH` overrides the path). **Only an analysis-routed question may
-write**: a block riding on any other reply is stripped and logged as ignored, so a
-poisoned report can't coach a status answer into memory. Vetting is the in-code half
+(`GAFFER_LEARNINGS_PATH` overrides the path). **Only an analysis-routed chat reply may
+write** (the #21 review wake is the one other writer, on its own scorecard-grounded path): a
+block riding on any other reply is stripped and logged as ignored, so a poisoned report
+can't coach a status answer into memory. Vetting is the in-code half
 of the tier-3 memory-write policy (`plans/security-hardening.md` §4): kind ∈
 specific/general, provenance mandatory, whitespace collapsed to one line (an entry
 can never inject a heading), any URL rejected, caps 280/200 chars and ≤4 per reply,
@@ -93,6 +94,31 @@ next wake, no restart. For local dev the daemon falls back to env vars
 (`GAFFER_ALLOWLIST_USER_IDS`, `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`; see
 `.env.example`). Locked decisions: runtime #7, LLM endpoint #8, security #10,
 deploy #11.
+
+### Post-GW review (#21)
+
+The scoring half of the learning loop. A ~4-hourly timer wakes `python3 -m daemon review`
+(`fpl-gaffer-review.{service,timer}`): a cheap check of the FPL bootstrap events that spends
+LLM tokens **once per finished gameweek** and logs `review_quiet` otherwise. When a GW settles
+it fetches the actuals, sets them against the **projection snapshot the brief wake froze** at
+draft/act time (`data/projections-gwNN.csv`, written by `daemon.review.snapshot_projections`)
+and the recorded decision, and grades the call — projections vs actuals, captain vs
+best-in-XI, transfer nets, bench calls, and every missing datum named as a gap. **Every number
+is computed in code (`build_scorecard`/`render_scorecard`/`review_headline`); the model never
+grades itself** — it writes the honest luck-vs-process prose and a `learnings` block onto a
+code-computed headline the daemon prepends; the effective XI, autosubs and armband (vice
+takes over when the captain does not play; triple captain / bench boost) are re-derived from
+the picks payload, and a `no_write` plan's transfers are graded as the counterfactual and
+labelled so. The wake routes to `agent/playbooks/post-gw-review.md` and is the one writer
+besides an analysis chat allowed into the diary — a chat "how did I do?" reaches the same
+playbook but has no scorecard, so its block is stripped, never recorded. Settled GWs are
+reviewed in order (a Pi that slept through two grades both, one per tick). The GW's own
+decision-log tail (fences stripped, bounded) rides along as evidence so rejected
+alternatives and AM dissent can be scored. The daemon appends the review to `reports/gwNN/decision-log.md`
+and marks the GW in `data/review-state.json` (gitignored) so a settled GW is graded exactly
+once. Entry id for the fielded picks comes from `FPL_ENTRY_ID` (public, non-secret) else the
+season-state `entry_id` else the season-state squad. Harness is `tests/test_review.py`;
+`MEMORY.md` promotion and the rulebook PR stay Rohit-driven (#11 not wired).
 
 ## Season state (single source of truth)
 
