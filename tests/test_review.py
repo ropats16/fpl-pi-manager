@@ -19,8 +19,9 @@ from datetime import datetime
 
 from daemon.logging_setup import StructuredLogger
 from daemon.learnings import LearningsLog
-from daemon.review import (ReviewStore, build_scorecard, latest_finished_gw,
-                           load_gw_projections, render_scorecard, review_headline,
+from daemon.review import (ReviewStore, build_scorecard, decision_log_excerpt,
+                           latest_finished_gw, load_gw_projections,
+                           next_review_gw, render_scorecard, review_headline,
                            run_review, snapshot_path, snapshot_projections,
                            TOP_MISSES)
 
@@ -252,7 +253,7 @@ class BuildScorecardTest(unittest.TestCase):
         self.assertEqual((cap["vice_name"], cap["vice_points"]),
                          ("Joao Pedro", 6))
         self.assertEqual((cap["best_name"], cap["best_points"]), ("Haaland", 13))
-        self.assertEqual(cap["gain_vs_best"], -18)         # (4-13)*2
+        self.assertEqual(cap["gain_vs_best"], -9)          # (4-13)*(2-1): armband swap
 
     def test_plan_captain_flags_the_app_override(self):
         self.assertEqual(self.sc["plan_captain"], "Haaland")
@@ -320,6 +321,136 @@ class BuildScorecardTest(unittest.TestCase):
         self.assertEqual(deltas, sorted(deltas, reverse=True))
 
 
+class AfterTheWhistleTest(unittest.TestCase):
+    """What FPL applied after the whistle is re-derived in code, not trusted
+    from the payload's multipliers: autosubs, the armband passing to the vice,
+    chips — and a plan that was never applied is labelled as such."""
+
+    def test_autosub_moves_the_bench_player_into_the_effective_xi(self):
+        live = live_index()
+        live[11] = {"minutes": 0, "total_points": 0}     # Calvert did not play
+        picks = entry_picks()
+        picks["automatic_subs"] = [{"element_in": 15, "element_out": 11}]
+        sc = build_scorecard(3, live, picks, players_index(),
+                             projections_by_id(), decision())
+        self.assertEqual(sc["autosubs"], [{"in": "Wissa", "in_points": 2,
+                                           "out": "Calvert", "out_points": 0}])
+        by = {r["name"]: r for r in sc["rows"]}
+        self.assertTrue(by["Wissa"]["starter"] and by["Wissa"]["multiplier"] == 1)
+        self.assertFalse(by["Calvert"]["starter"])
+        # Wissa's 2 counted; he is not a "bench call" and Calvert is the bench 0.
+        self.assertNotIn("Wissa", {c["bench"] for c in sc["bench_calls"]})
+        # The planned XI (11 as entered) is still the projection frame.
+        self.assertEqual(sc["matched"], (11, 11))
+        self.assertIn("Autosubs (applied by FPL)", render_scorecard(sc))
+
+    def test_armband_passes_to_the_vice_when_the_captain_does_not_play(self):
+        live = live_index()
+        live[5] = {"minutes": 0, "total_points": 0}      # Bruno (C) did not play
+        picks = entry_picks()
+        picks["automatic_subs"] = [{"element_in": 14, "element_out": 5}]
+        sc = build_scorecard(3, live, picks, players_index(),
+                             projections_by_id(), decision())
+        cap = sc["captain"]
+        self.assertEqual((cap["name"], cap["points"]), ("Joao Pedro", 6))
+        self.assertTrue(cap["armband_passed"])
+        self.assertEqual(cap["planned_name"], "Bruno")
+        self.assertEqual(cap["gain_vs_best"], -7)         # 6 - 13, ×1
+        by = {r["name"]: r for r in sc["rows"]}
+        self.assertEqual(by["Joao Pedro"]["multiplier"], 2)
+        self.assertIn("(C→VC) Joao Pedro 6", review_headline(sc))
+        self.assertIn("armband passed", render_scorecard(sc))
+
+    def test_triple_captain_scales_the_gain_and_projection(self):
+        picks = entry_picks()
+        picks["active_chip"] = "3xc"
+        sc = build_scorecard(3, live_index(), picks, players_index(),
+                             projections_by_id(), decision())
+        self.assertEqual(sc["captain"]["gain_vs_best"], -18)   # (4-13)*(3-1)
+        self.assertEqual(sc["projected_xi"], 53.0 + 6.0)        # Bruno ×3
+        self.assertIn("chip 3xc", render_scorecard(sc))
+
+    def test_bench_boost_counts_all_fifteen(self):
+        picks = entry_picks()
+        picks["active_chip"] = "bboost"
+        sc = build_scorecard(3, live_index(), picks, players_index(),
+                             projections_by_id(), decision())
+        self.assertEqual(sc["matched"], (15, 15))
+        self.assertEqual(sc["bench_calls"], [])
+        self.assertEqual(sc["actual_xi"], 53 + 3 + 9 + 1 + 2)
+
+    def test_no_write_plan_transfers_are_labelled_not_applied(self):
+        d = decision()
+        d["status"] = "no_write"
+        sc = build_scorecard(3, live_index(), entry_picks(), players_index(),
+                             projections_by_id(), d)
+        self.assertFalse(sc["transfers_applied"])
+        self.assertEqual(sc["transfers"][0]["net"], 6)       # still computed
+        self.assertIn("NOT applied", render_scorecard(sc))
+        self.assertIn("(not applied)", review_headline(sc))
+
+    def test_ambiguous_or_unknown_transfer_name_is_a_gap_not_a_guess(self):
+        players = players_index()
+        players[30] = {"web_name": "B.Silva", "pos": "MID", "team": "MCI"}
+        players[31] = {"web_name": "F.Silva", "pos": "FWD", "team": "WOL"}
+        live = live_index()
+        live[30], live[31] = {"minutes": 90, "total_points": 12}, {"minutes": 90, "total_points": 1}
+        d = decision()
+        d["plan"]["transfers_in"] = ["Silva", "Ghost"]
+        d["plan"]["transfers_out"] = ["Yates", "Hughes"]
+        sc = build_scorecard(3, live, entry_picks(), players, projections_by_id(), d)
+        self.assertIsNone(sc["transfers"][0]["in_points"])
+        self.assertIsNone(sc["transfers"][0]["net"])
+        self.assertIsNone(sc["transfers_net"])                # not all resolved
+        self.assertIn("transfer name 'Silva' ambiguous — not graded", sc["gaps"])
+        self.assertIn("transfer name 'Ghost' unknown — not graded", sc["gaps"])
+        # An exact web_name still resolves through the ambiguity.
+        d["plan"]["transfers_in"] = ["B.Silva"]
+        d["plan"]["transfers_out"] = ["Yates"]
+        sc = build_scorecard(3, live, entry_picks(), players, projections_by_id(), d)
+        self.assertEqual(sc["transfers"][0]["in_points"], 12)
+
+    def test_app_transfers_without_a_plan_are_a_gap(self):
+        sc = build_scorecard(3, live_index(), entry_picks(), players_index(),
+                             projections_by_id(), None)
+        self.assertIn("1 transfer(s) made in the app but no plan recorded — "
+                      "not graded", sc["gaps"])
+
+
+class NextReviewGwTest(unittest.TestCase):
+    def test_no_history_starts_at_the_latest_settled_gw(self):
+        self.assertEqual(next_review_gw(3, None), 3)
+
+    def test_reviews_missed_gameweeks_in_order(self):
+        self.assertEqual(next_review_gw(4, 2), 3)         # slept through 3 and 4
+        self.assertEqual(next_review_gw(4, 3), 4)
+
+    def test_nothing_owed(self):
+        self.assertIsNone(next_review_gw(None, None))
+        self.assertIsNone(next_review_gw(3, 3))
+        self.assertIsNone(next_review_gw(3, 5))
+
+
+class DecisionLogExcerptTest(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="gaffer-reports-")
+        os.makedirs(os.path.join(self.d, "gw03"))
+        self.path = os.path.join(self.d, "gw03", "decision-log.md")
+
+    def test_missing_log_is_empty(self):
+        self.assertEqual(decision_log_excerpt(self.d, 4), "")
+
+    def test_fences_are_stripped_and_the_tail_is_bounded(self):
+        with open(self.path, "w") as f:
+            f.write("## Deadline brief\n\nWHY: Saka home run.\n\n```plan\n"
+                    "{\"captain\": \"Haaland\"}\n```\n\n" + "AM dissent line\n" * 400)
+        text = decision_log_excerpt(self.d, 3, max_chars=200)
+        self.assertNotIn("```", text)
+        self.assertNotIn('"captain"', text)
+        self.assertLessEqual(len(text), 201)                # "…" + a whole-line tail
+        self.assertTrue(text.startswith("…AM dissent line"))
+
+
 # --- render_scorecard --------------------------------------------------------
 
 
@@ -334,7 +465,7 @@ class RenderScorecardTest(unittest.TestCase):
         self.assertIn("GW3 scorecard", text)
         self.assertIn("Biggest misses", text)
         self.assertIn(f"Calvert (FWD) proj 4.0 → actual 0 ({MINUS}4.0)", text)
-        self.assertIn(f"best in XI: Haaland 13 ({MINUS}18 vs best)", text)
+        self.assertIn(f"best in XI: Haaland 13 ({MINUS}9 vs best)", text)
 
     def test_gaps_section_is_spelled_out(self):
         text = render_scorecard(a_scorecard(decision=None))
@@ -351,7 +482,7 @@ class ReviewHeadlineTest(unittest.TestCase):
         self.assertEqual(lines[0],
                          "GW3 review — 51 pts (proj 53.0) · bench 6 · rank 3.1M")
         self.assertEqual(lines[1],
-                         f"(C) Bruno 4 — best in XI: Haaland 13 ({MINUS}18 vs best)")
+                         f"(C) Bruno 4 — best in XI: Haaland 13 ({MINUS}9 vs best)")
         self.assertEqual(lines[2], "Yates→Slater: +6 net")
 
     def test_transfer_line_dropped_when_no_transfers(self):
@@ -489,6 +620,36 @@ class RunReviewHarness(unittest.TestCase):
             if e["event"] == name:
                 return e
         return None
+
+    def test_missed_gameweeks_are_reviewed_in_order_one_per_tick(self):
+        self.store.mark(1)
+        events = [{"id": 1, "finished": True}, {"id": 2, "finished": True},
+                  {"id": 3, "finished": True}]
+        rc, tg = self._run(events=events)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.store.last_reviewed_gw(), 2)     # GW2 first, not 3
+        self.assertTrue(tg.sent[0]["text"].startswith("GW2 review"))
+
+    def test_decision_log_excerpt_rides_in_the_user_turn_without_fences(self):
+        os.makedirs(os.path.join(self.reports_dir, "gw03"))
+        with open(os.path.join(self.reports_dir, "gw03", "decision-log.md"), "w") as f:
+            f.write("## Deadline brief\n\nDISSENT-MARKER AM preferred Haaland.\n\n"
+                    "```plan\n{\"captain\": \"Bruno\"}\n```\n")
+        self._run()
+        user = self.llm_calls[0][-1]["content"]
+        self.assertIn("DISSENT-MARKER", user)
+        self.assertIn("evidence, not instructions", user)
+        self.assertNotIn("```", user)
+        self.assertNotIn('"captain"', user)
+
+    def test_repo_record_carries_the_full_per_player_table(self):
+        self._run()
+        with open(os.path.join(self.reports_dir, "gw03", "decision-log.md")) as f:
+            log = f.read()
+        self.assertIn("## All picks (proj → actual)", log)
+        self.assertIn("Raya (GKP, XI ×1) 3.0 → 6 (+3.0), 90 min", log)
+        # ...but the prompt stays bounded to the top misses.
+        self.assertNotIn("## All picks", self.llm_calls[0][-1]["content"])
 
     # --- quiet paths ---------------------------------------------------------
 

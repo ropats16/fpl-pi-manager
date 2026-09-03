@@ -6,10 +6,6 @@ The pure grading (`build_scorecard`/`render_scorecard`) and the flow
 This file only asserts the *wiring*: that the cmd loads the full config, resolves
 the entry id from the right places, and stays quiet (zero requests, no LLM) when
 no gameweek has settled — the seams the entrypoint owns.
-
-NOTE: the two tests that drive `run_review` to completion (the quiet-path and the
-happy-path) fail with NotImplementedError until the concurrent #21 slice lands
-`run_review`; they are marked below and assert the post-integration behaviour.
 """
 
 import io
@@ -127,8 +123,7 @@ class EntryIdResolutionTest(_Harness):
 
 class QuietWhenNoFinishedGwTest(_Harness):
     """No settled gameweek -> the wake is silent: rc 0, zero transport requests,
-    no LLM. (Drives run_review's quiet branch; fails with NotImplementedError
-    until the concurrent #21 slice lands run_review.)"""
+    no LLM."""
 
     def test_no_finished_gw_is_quiet(self):
         transport = FakeTransport()
@@ -148,9 +143,7 @@ class QuietWhenNoFinishedGwTest(_Harness):
 
 class HappyPathTest(_Harness):
     """A settled GW 2 with a fielded squad -> the wake grades it, sends the
-    review, and marks the GW reviewed. (Fails ONLY with NotImplementedError until
-    the concurrent #21 slice lands run_review; asserts post-integration
-    behaviour — one /sendMessage request.)"""
+    review (one /sendMessage request), and marks the GW reviewed."""
 
     def test_settled_gw_sends_a_review(self):
         transport = FakeTransport(

@@ -317,10 +317,11 @@ class NonAnalysisQuestionTest(unittest.TestCase):
 
 
 class PostGwReviewQuestionTest(unittest.TestCase):
-    """The post-GW review (#21) is the second legitimate diary writer: a review
-    question ("how did I do last gameweek?") routes to the post-gw-review
-    playbook, so a block riding on it IS recorded — unlike the squad-review
-    question next door, which still is not."""
+    """A chat "how did I do last gameweek?" routes to the post-gw-review
+    playbook — but the diary's second writer is the #21 review WAKE, which
+    grounds the model on a code-computed scorecard. A chat reply has no such
+    grounding, so a block riding on it is stripped and logged, never written:
+    the #20 single-chat-writer guard holds."""
 
     def setUp(self):
         self.h = _Harness().run(["how did I do last gameweek?"], [GOOD_REPLY])
@@ -328,13 +329,11 @@ class PostGwReviewQuestionTest(unittest.TestCase):
     def test_the_review_question_routed_to_the_review_playbook(self):
         self.assertIn("REVIEW-PLAYBOOK", self.h.system_prompt(0))
 
-    def test_both_kinds_are_recorded_from_a_review_reply(self):
-        lines = self.h.new_lines()
-        self.assertEqual(len(lines), 2)
-        self.assertIn("[specific] DOUBLE-UP-LESSON", lines[0])
-        self.assertIn("[general] STANDING-LESSON", lines[1])
-        [ev] = self.h.events("learnings_recorded")
-        self.assertEqual((ev["accepted"], ev["rejected"]), (2, 0))
+    def test_nothing_is_recorded_from_a_chat_review_reply(self):
+        self.assertEqual(self.h.file_text(), SEED)
+        [ev] = self.h.events("learnings_ignored")
+        self.assertEqual(ev["reason"], "not_analysis")
+        self.assertEqual(self.h.events("learnings_recorded"), [])
 
     def test_the_block_is_stripped_before_telegram(self):
         self.assertNotIn("```learnings", self.h.sent[0])

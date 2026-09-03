@@ -124,8 +124,8 @@ def _generate_plan(llm_complete, assembler_factory, user_text, logger, gw):
 
 def _snapshot(projections_path, snapshot_dir, gw, logger):
     """Freeze the GW's projection rows so the post-GW review (#21) can grade the
-    call against exactly what it was made on. Draft writes the first copy; act
-    overwrites it with the copy closest to the deadline. Best-effort: with either
+    call against exactly what it was made on. Draft writes the first copy; the
+    final and act overwrite it with the copy closest to the deadline. Best-effort: with either
     path unset it does nothing (no event); any error logs brief_projections_error
     and never blocks the brief."""
     if not (projections_path and snapshot_dir):
@@ -164,12 +164,15 @@ def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
 
 
 def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
-              logger, gw):
+              logger, gw, projections_path=None, snapshot_dir=None):
     new_plan, text, _ = _generate_plan(
         llm_complete, assembler_factory,
         f"final pre-deadline check for GW{gw}", logger, gw)
     approved = store.approved_plan
     has_chip = bool(new_plan and new_plan.get("chip"))
+    # The final is where the last real decision is made: freeze the projections
+    # it was made on (act overwrites again at T−30m only if they moved).
+    _snapshot(projections_path, snapshot_dir, gw, logger)
 
     if new_plan is None:
         # Unverifiable final: no machine plan even after a retry. The carry-void
@@ -305,7 +308,9 @@ def run_brief(fetch, llm_complete, assembler_factory, store, telegram, allowlist
                              snapshot_dir=snapshot_dir)
         if action == "final":
             return _do_final(llm_complete, assembler_factory, store, telegram,
-                             allowlist, logger, gw)
+                             allowlist, logger, gw,
+                             projections_path=projections_path,
+                             snapshot_dir=snapshot_dir)
         return _do_act(store, telegram, allowlist, logger, actuator, state_path,
                        gw, now, projections_path=projections_path,
                        snapshot_dir=snapshot_dir)

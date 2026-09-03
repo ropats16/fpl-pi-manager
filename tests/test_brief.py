@@ -407,6 +407,20 @@ class ProjectionsSnapshotTest(BriefHarness):
         self.assertTrue(all(g == "2" for g in self._gw2_ids(snap)))
         self.assertIsNotNone(self.event("brief_projections_snapshot"))
 
+    def test_final_snapshots_too(self):
+        # T−2h is where the last real decision is made; it must freeze the
+        # projections it stood on, not leave the draft's copy to be graded.
+        p = _plan()
+        self.store.set_pending(2, p)
+        self.store.approve()
+        self.store.draft_sent = True
+        self.store.save()
+        rc, tg, snap = self._run("2026-08-29T09:00:00Z",
+                                 [_brief_with_block(dict(p))], self.SRC)
+        self.assertEqual(rc, 0)
+        self.assertIn("brief_final_sent", self.kinds())
+        self.assertTrue(os.path.exists(snap))
+
     def test_no_write_act_still_snapshots(self):
         self.store.set_pending(2, _plan())     # pending but never approved
         self.store.save()

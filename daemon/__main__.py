@@ -48,6 +48,12 @@ def _data_dir(env):
     return env.get("GAFFER_DATA_DIR", os.path.join(REPO_ROOT, "data"))
 
 
+def _projections_path(env):
+    """The pipeline's long-format projections.csv (gitignored data/)."""
+    return env.get("GAFFER_PROJECTIONS_PATH",
+                   os.path.join(REPO_ROOT, "data", "projections.csv"))
+
+
 def _learnings_path(env):
     """The #20 diary. Repo content (unlike the gitignored state files): it is the
     record of what the gaffer learned. Rohit reviews it in the repo; the per-wake
@@ -66,9 +72,7 @@ def build_assembler(env=None, approval_store_path=None):
     env = os.environ if env is None else env
     workspace = env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent"))
     state = _state_path(env)
-    projections = env.get("GAFFER_PROJECTIONS_PATH",
-                          os.path.join(REPO_ROOT, "data", "projections.csv"))
-    return Assembler(workspace, state, projections_path=projections,
+    return Assembler(workspace, state, projections_path=_projections_path(env),
                      approval_store_path=approval_store_path,
                      learnings_path=_learnings_path(env))
 
@@ -251,13 +255,12 @@ def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
         def fetch():
             return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))["events"]
 
-    projections_path = env.get("GAFFER_PROJECTIONS_PATH",
-                               os.path.join(REPO_ROOT, "data", "projections.csv"))
     return run_brief(fetch=fetch, llm_complete=llm.complete,
                      assembler_factory=assembler_factory, store=store,
                      telegram=telegram, allowlist=cfg.allowlist, logger=logger,
                      actuator=actuator, state_path=state_path,
-                     reports_dir=reports_dir, projections_path=projections_path,
+                     reports_dir=reports_dir,
+                     projections_path=_projections_path(env),
                      snapshot_dir=_data_dir(env), now=now)
 
 
@@ -333,7 +336,7 @@ def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
                       telegram=telegram, allowlist=cfg.allowlist, logger=logger,
                       learnings=learnings, state_path=state_path,
                       reports_dir=reports_dir, snapshot_dir=_data_dir(env),
-                      entry_id=entry_id, now=now)
+                      now=now)
 
 
 def main(argv):
