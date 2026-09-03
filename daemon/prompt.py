@@ -19,6 +19,8 @@ import json
 import os
 import unicodedata
 
+from daemon.learnings import LearningsLog, render_learnings
+
 CAP_TOKENS = 25000
 # Conservative ~3.5 chars/token. Dense markdown (prices, names, punctuation)
 # tokenizes below the ~4-char English-prose average, so we round the ratio down
@@ -225,12 +227,13 @@ class Workspace:
 _DEADLINE_KEYWORDS = ("deadline", "transfer plan", "lock the team", "who should i")
 _REVIEW_KEYWORDS = ("post-gw", "post gw", "how did i do", "last gameweek", "last gw",
                     "gameweek review")
-# The ad-hoc strategy question (#20). Deliberately broad — "should i" alone would
-# swallow half the deadline traffic, which is exactly why analysis is checked
-# LAST: "who should i captain" matched deadline first and stays a brief.
+# The ad-hoc strategy question (#20). Method words only — a bare "should i"
+# would drag "should I bench Saka?" out of the lighter squad-review default and
+# demand a learnings block for a one-line call. Checked LAST so a deadline or
+# review message keeps its own playbook even when phrased as a comparison.
 _ANALYSIS_KEYWORDS = ("backtest", "analys", "analyz", "strategy", "double up",
                       "doubling", "is it worth", "compare", "historically",
-                      "what if", "should i")
+                      "what if")
 
 
 def select_playbook(user_text):
@@ -318,7 +321,6 @@ class Assembler:
         if not self.learnings_path:
             return ""
         try:
-            from daemon.learnings import LearningsLog, render_learnings
             bullets = render_learnings(
                 LearningsLog(self.learnings_path).select(user_text))
         except Exception:            # noqa: BLE001 — a broken diary never mutes the bot

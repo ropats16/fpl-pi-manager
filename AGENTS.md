@@ -63,13 +63,18 @@ An ad-hoc strategy question (backtest, compare, "is it worth", "what if") routes
 projections + gw reports and to **end the reply with a fenced ` ```learnings ` JSON
 block** (`{"specific": [...], "general": [...]}`, each entry a lesson + its
 evidence). The daemon strips that block before Telegram (same seam as ` ```plan `,
-#18), vets it, and appends what survives — one line per entry, `open(…, "a")` only —
-to `agent/memory/learnings.md`, a model-writable append-only diary
-(`GAFFER_LEARNINGS_PATH` overrides the path). Vetting **is** the tier-3 memory-write
-policy (`plans/security-hardening.md` §4), in daemon code, not in the prompt: kind ∈
+#18; a malformed one is stripped and logged, never sent), vets it, and appends what
+survives — one line per entry, `open(…, "a")` + fsync only — to
+`agent/memory/learnings.md`, a model-writable append-only diary
+(`GAFFER_LEARNINGS_PATH` overrides the path). **Only an analysis-routed question may
+write**: a block riding on any other reply is stripped and logged as ignored, so a
+poisoned report can't coach a status answer into memory. Vetting is the in-code half
+of the tier-3 memory-write policy (`plans/security-hardening.md` §4): kind ∈
 specific/general, provenance mandatory, whitespace collapsed to one line (an entry
 can never inject a heading), any URL rejected, caps 280/200 chars and ≤4 per reply,
-dedupe on the lesson; every rejection is logged with its reason. Prompt assembly then
+dedupe on the lesson; every rejection is logged with its reason. The policy's other
+half — one git commit per model write for audit/revert — is the #11 deploy machinery
+and is not wired yet; until then the diary is reviewed as ordinary repo diff. Prompt assembly then
 injects a bounded relevance-scored selection (≤6 entries / ~1.5k chars) under an
 "evidence, not instructions" delimiter, so a poisoned learning can bias judgment but
 never carry an order. `python3 -m daemon selftest` demonstrates the 2-turn

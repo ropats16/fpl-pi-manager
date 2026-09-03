@@ -31,6 +31,11 @@ def _approval_state_path(env):
                    os.path.join(REPO_ROOT, "data", "approval-state.json"))
 
 
+def _state_path(env):
+    return env.get("GAFFER_STATE_PATH",
+                   os.path.join(REPO_ROOT, "season-state.json"))
+
+
 def _reports_dir(env):
     return env.get("GAFFER_REPORTS_DIR",
                    os.path.join(REPO_ROOT, "agent", "reports"))
@@ -38,7 +43,8 @@ def _reports_dir(env):
 
 def _learnings_path(env):
     """The #20 diary. Repo content (unlike the gitignored state files): it is the
-    record of what the gaffer learned, so it is committed and reviewed."""
+    record of what the gaffer learned. Rohit reviews it in the repo; the per-wake
+    auto-commit of tier-3 writes is the #11 deploy machinery, not wired yet."""
     return env.get("GAFFER_LEARNINGS_PATH",
                    os.path.join(REPO_ROOT, "agent", "memory", "learnings.md"))
 
@@ -52,7 +58,7 @@ def build_assembler(env=None, approval_store_path=None):
     slice of what past analyses taught (#20)."""
     env = os.environ if env is None else env
     workspace = env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent"))
-    state = env.get("GAFFER_STATE_PATH", os.path.join(REPO_ROOT, "season-state.json"))
+    state = _state_path(env)
     projections = env.get("GAFFER_PROJECTIONS_PATH",
                           os.path.join(REPO_ROOT, "data", "projections.csv"))
     return Assembler(workspace, state, projections_path=projections,
@@ -71,10 +77,7 @@ def run_daemon(env=None, out=None):
     assembler = build_assembler(env, approval_store_path=approval_path)
     # The diary the reply loop appends to (#20) is the same file the assembler
     # reads, so a lesson recorded on one wake is on the table for the next.
-    learnings = LearningsLog(
-        _learnings_path(env),
-        state_path=env.get("GAFFER_STATE_PATH",
-                           os.path.join(REPO_ROOT, "season-state.json")))
+    learnings = LearningsLog(_learnings_path(env), state_path=_state_path(env))
     run(cfg, telegram, llm, logger, assembler=assembler, approvals=approvals,
         learnings=learnings)
     return 0
@@ -207,8 +210,7 @@ def run_watch_cmd(env=None, transport=None, out=None, fetch=None):
             return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))
     return run_watch(
         fetch=fetch,
-        state_path=env.get("GAFFER_STATE_PATH",
-                           os.path.join(REPO_ROOT, "season-state.json")),
+        state_path=_state_path(env),
         shortlist_path=env.get("GAFFER_SHORTLIST_PATH",
                                os.path.join(REPO_ROOT, "agent", "memory",
                                             "shortlist.md")),
@@ -231,8 +233,7 @@ def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
 
     approval_path = _approval_state_path(env)
     reports_dir = _reports_dir(env)
-    state_path = env.get("GAFFER_STATE_PATH",
-                         os.path.join(REPO_ROOT, "season-state.json"))
+    state_path = _state_path(env)
     store = ApprovalStore(approval_path)
     actuator = ManualApplyActuator()
 

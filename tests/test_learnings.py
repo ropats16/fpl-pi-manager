@@ -510,11 +510,32 @@ class RecordLearningsTest(unittest.TestCase):
                          reply)
         self.assertEqual(self.logger.records, [])
 
-    def test_malformed_block_writes_nothing_and_leaves_the_reply_alone(self):
+    def test_malformed_block_is_stripped_logged_and_writes_nothing(self):
+        # The human gets the prose, never a broken machine block; the journal
+        # names the failure; the diary is untouched.
         reply = "answer\n\n```learnings\n{oops,,}\n```\n"
         self.assertEqual(record_learnings(self.log, reply, "q", self.logger),
-                         reply)
-        self.assertEqual(self.logger.records, [])
+                         "answer")
+        self.assertEqual(self.logger.kinds(), ["learnings_rejected"])
+        self.assertEqual(self.logger.fields("learnings_rejected")[0]["reason"],
+                         "malformed_block")
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_non_list_kind_value_never_crashes_the_reply(self):
+        # {"specific": 5}: garbage shape, not a TypeError out of the loop.
+        reply = "answer\n\n```learnings\n{\"specific\": 5, \"general\": \"x\"}\n```"
+        self.assertEqual(record_learnings(self.log, reply, "q", self.logger),
+                         "answer")
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_record_false_strips_the_block_but_writes_nothing(self):
+        # The loop's gate: a non-analysis question may not fill the diary.
+        reply = "The answer.\n\n" + _block(
+            specific=[{"lesson": "A squad lesson", "evidence": "GW2 log"}])
+        text = record_learnings(self.log, reply, "q", self.logger, record=False)
+        self.assertEqual(text, "The answer.")
+        self.assertEqual(self.logger.kinds(), ["learnings_ignored"])
+        self.assertEqual(self.logger.fields("learnings_ignored")[0]["items"], 1)
         self.assertFalse(os.path.exists(self.path))
 
     def test_write_error_is_logged_and_the_reply_still_goes_out(self):

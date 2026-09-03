@@ -87,17 +87,24 @@ def parse_learnings(reply_text):
         return None, reply_text
     items = []
     for kind in KINDS:
-        for el in raw.get(kind) or []:
+        elements = raw.get(kind)
+        if not isinstance(elements, list):
+            continue                 # {"specific": 5} is garbage, not a crash
+        for el in elements:
             # A non-dict element still becomes an item so it is *rejected* with
             # a reason rather than vanishing silently.
             el = el if isinstance(el, dict) else {}
             items.append({"kind": kind, "lesson": el.get("lesson"),
                           "evidence": el.get("evidence")})
-    # Rejoin the prose around the cut: the block is normally last, but a reply
-    # that keeps talking afterwards must not reach Telegram with the fence's
-    # blank lines left behind as a gap.
+    return items, _strip_block(text, m)
+
+
+def _strip_block(text, m):
+    """Rejoin the prose around the cut. The block is normally last, but a reply
+    that keeps talking afterwards must not reach Telegram with the fence's blank
+    lines left behind as a gap."""
     head, tail = text[:m.start()].rstrip(), text[m.end():].lstrip()
-    return items, "\n\n".join(p for p in (head, tail) if p)
+    return "\n\n".join(p for p in (head, tail) if p)
 
 
 def _sanitize(value):
@@ -148,7 +155,7 @@ def vet(items):
     return accepted, rejected
 
 
-def _tokens(text):
+def _words(text):
     return {w for w in _WORD.findall((text or "").casefold())
             if len(w) >= 3 and w not in _STOPWORDS}
 
@@ -241,6 +248,8 @@ class LearningsLog:
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(("\n" if self._needs_newline() else "")
                     + "\n".join(lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())     # SD card + power cut: the line is on disk or not at all
         return appended, skipped
 
     def _needs_newline(self):
@@ -264,10 +273,10 @@ class LearningsLog:
         capped on both entry count and rendered characters — the prompt budget
         is a hard ceiling, so the diary can grow forever without the section
         growing with it."""
-        q = _tokens(question)
+        q = _words(question)
         scored = []
         for i, e in enumerate(self.entries()):
-            overlap = len(q & _tokens(
+            overlap = len(q & _words(
                 f"{e['lesson']} {e['evidence']} {e['question']}"))
             score = overlap + (0.5 if e["kind"] == "general" else 0.0)
             if score > 0:
@@ -293,20 +302,36 @@ def render_learnings(entries):
         for e in entries or [])
 
 
-def record_learnings(log, reply_text, question, logger, now=None):
+def record_learnings(log, reply_text, question, logger, now=None, record=True):
     """parse -> vet -> append, returning the text that may go to Telegram.
 
     The convenience seam for the reply loop. A reply with no block comes back
-    untouched and logs nothing. Anything else logs one `learnings_recorded`
-    (with the counts) plus one `learnings_rejected` per dropped item, so the
-    journal shows exactly what the vetting gate refused and why.
+    untouched and logs nothing. A block that will not parse is stripped anyway
+    and logged as `learnings_rejected` (reason `malformed_block`) — the human
+    gets the prose, never a broken machine block, and nothing half-parsed
+    reaches the diary. Anything else logs one `learnings_recorded` (with the
+    counts) plus one `learnings_rejected` per dropped item, so the journal shows
+    exactly what the vetting gate refused and why.
+
+    `record=False` strips without writing (`learnings_ignored`): the loop passes
+    it for every question that did NOT route to the analysis playbook, so a
+    tier-4 report cannot coach a squad-review reply into writing memory — only
+    the one playbook that asks for the block can fill the diary (#20).
 
     A failing write is logged as `learnings_write_error` and swallowed: the
     diary is a side effect of answering, and it must never be able to mute the
     answer itself."""
     items, stripped = parse_learnings(reply_text)
     if items is None:
-        return reply_text
+        m = _LEARNINGS_BLOCK.search(reply_text or "")
+        if not m:
+            return reply_text
+        logger.event("learnings_rejected", reason="malformed_block", kind=None,
+                     lesson=None)
+        return _strip_block(reply_text, m)
+    if not record:
+        logger.event("learnings_ignored", reason="not_analysis", items=len(items))
+        return stripped
 
     accepted, rejected = vet(items)
     for item, reason in rejected:

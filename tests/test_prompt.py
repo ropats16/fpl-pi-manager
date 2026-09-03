@@ -180,12 +180,16 @@ class SelectPlaybookTest(unittest.TestCase):
             self.assertEqual(select_playbook(text), "analysis", text)
 
     def test_deadline_keywords_win_over_analysis_keywords(self):
-        # "should i" is an analysis keyword and "who should i" a deadline one;
-        # order (deadline before analysis) keeps the captain question a brief.
+        # Order (deadline before analysis) keeps the captain question a brief.
         self.assertEqual(select_playbook("who should i captain this week?"),
                          "deadline-brief")
         self.assertEqual(select_playbook("should i double up on Arsenal defence?"),
                          "analysis")
+
+    def test_a_bare_should_i_stays_on_the_light_squad_review_default(self):
+        # A one-line call is not an analysis — it must not be made to produce a
+        # method section and a learnings block.
+        self.assertEqual(select_playbook("should i bench Saka?"), "squad-review")
 
     def test_review_keywords_still_win_over_analysis_keywords(self):
         self.assertEqual(select_playbook("how did i do last gw — compare to the average"),

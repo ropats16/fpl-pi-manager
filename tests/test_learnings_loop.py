@@ -272,8 +272,8 @@ class PoisonedBlockTest(unittest.TestCase):
 
 
 class MalformedBlockTest(unittest.TestCase):
-    """(e): a half-parsed block is worse than none — the reply goes out untouched
-    and the diary is not written at all."""
+    """(e): a half-parsed block is worse than none — the diary is not written,
+    the broken fence never reaches the human, and the journal says why."""
 
     REPLY = ("Short answer: no.\n\n```learnings\n{\"specific\": [ {\"lesson\": "
              "\"trailing comma\",, }\n```")
@@ -284,16 +284,34 @@ class MalformedBlockTest(unittest.TestCase):
     def test_nothing_is_appended(self):
         self.assertEqual(self.h.file_text(), SEED)
 
-    def test_the_reply_reaches_telegram_untouched(self):
-        # Untouched by the learnings pass — the Telegram formatter still renders
-        # the fence, so assert on content rather than bytes.
-        self.assertEqual(len(self.h.sent), 1)
-        self.assertIn("Short answer: no.", self.h.sent[0])
-        self.assertIn("trailing comma", self.h.sent[0])   # nothing was stripped
+    def test_the_prose_reaches_telegram_without_the_broken_fence(self):
+        self.assertEqual(self.h.sent, ["Short answer: no."])
 
-    def test_no_learnings_event_is_journalled(self):
+    def test_the_malformed_block_is_journalled_not_recorded(self):
         self.assertEqual(self.h.events("learnings_recorded"), [])
-        self.assertEqual(self.h.events("learnings_rejected"), [])
+        [ev] = self.h.events("learnings_rejected")
+        self.assertEqual(ev["reason"], "malformed_block")
+
+
+class NonAnalysisQuestionTest(unittest.TestCase):
+    """Only the analysis playbook may fill the diary: a block riding on a plain
+    squad question is stripped and logged, never written — a poisoned tier-4
+    report can't coach a status reply into memory (#20, security §4)."""
+
+    def setUp(self):
+        self.h = _Harness().run(["how's my team looking?"], [GOOD_REPLY])
+
+    def test_nothing_is_appended(self):
+        self.assertEqual(self.h.file_text(), SEED)
+
+    def test_the_block_is_still_stripped_before_telegram(self):
+        self.assertNotIn("```learnings", self.h.sent[0])
+        self.assertIn("worth it only against weak attacks", self.h.sent[0])
+
+    def test_the_ignored_block_is_journalled(self):
+        [ev] = self.h.events("learnings_ignored")
+        self.assertEqual((ev["reason"], ev["items"]), ("not_analysis", 2))
+        self.assertEqual(self.h.events("learnings_recorded"), [])
 
 
 class UnwritableLogTest(unittest.TestCase):

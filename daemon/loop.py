@@ -19,6 +19,7 @@ parse runs, so both blocks are gone by the time Telegram sees the text.
 import time
 
 from daemon.learnings import record_learnings
+from daemon.prompt import select_playbook
 from daemon.plan import (append_decision_log, is_approval, is_stop, parse_plan,
                          plan_summary)
 
@@ -85,18 +86,23 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
     reply = llm.complete(messages)
 
     # The learnings diary (#20) reads the RAW reply and hands back the text with
-    # its own machine block removed. It runs before the plan parse so a reply
-    # carrying both blocks loses both; the decision log below still records the
-    # full `reply`, because the repo record wants what the gaffer actually said.
-    base = record_learnings(learnings, reply, msg.text, logger) \
-        if learnings is not None else reply
+    # its own machine block removed. Only a question that routed to the analysis
+    # playbook may WRITE — any other reply carrying a block is stripped and
+    # logged, so a poisoned report can't coach a squad-review answer into memory.
+    # It runs before the plan parse so a reply carrying both blocks loses both;
+    # the decision log below still records the full `reply`, because the repo
+    # record wants what the gaffer actually said.
+    answer = reply
+    if learnings is not None:
+        answer = record_learnings(learnings, reply, msg.text, logger,
+                                  record=select_playbook(msg.text) == "analysis")
 
-    send_text = base
+    send_text = answer
     # An iterate is a debate reply that re-emits a full plan block: it becomes
     # the new pending snapshot (fresh yes required) and the machine block is
     # stripped before Telegram (§3② — the block never reaches the human).
     if st is not None and st.phase in ("awaiting_approval", "approved", "locked"):
-        plan, stripped = parse_plan(base)
+        plan, stripped = parse_plan(answer)
         if plan is not None:
             approvals.store.void_carry(plan)
             logger.event("iterate", gw=st.gw)
