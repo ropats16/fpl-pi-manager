@@ -10,22 +10,30 @@ AWAITING flips the write gate with no model call, and an iterate (a reply that
 carries a fresh ```plan``` block) carry-voids the snapshot so a new `yes` is
 required. Everything else — `yes but…`, `why?`, plain chat — routes to the model
 as debate, grounded on the pending/approved plan via the assembler.
+
+When a `learnings` diary is wired (#20), the reply's ```learnings block is the
+second machine block the loop strips: it is vetted and appended before the plan
+parse runs, so both blocks are gone by the time Telegram sees the text.
 """
 
 import time
 
+from daemon.learnings import record_learnings
 from daemon.plan import (append_decision_log, is_approval, is_stop, parse_plan,
                          plan_summary)
 
 
 def process_message(msg, cfg, telegram, llm, logger, assembler=None,
-                    approvals=None):
+                    approvals=None, learnings=None):
     """Handle one incoming Telegram message. Returns True if a reply was sent.
 
     When an `assembler` is wired, the system prompt is assembled fresh from the
     workspace + distilled season facts (#16); otherwise the static system prompt
     is used (the #15 walking-skeleton path). When an `approvals` gate is wired,
-    the deterministic approve/stop path runs before any LLM call (#18)."""
+    the deterministic approve/stop path runs before any LLM call (#18). When a
+    `learnings` log is wired, an analysis reply's learnings block is vetted and
+    recorded, and the block stripped, before anything else touches the text
+    (#20)."""
     if msg.from_id not in cfg.allowlist:
         # Silent drop, no reply — replying confirms a live bot to a stranger.
         logger.event("drop", reason="not_allowlisted",
@@ -76,12 +84,19 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
         ]
     reply = llm.complete(messages)
 
-    send_text = reply
+    # The learnings diary (#20) reads the RAW reply and hands back the text with
+    # its own machine block removed. It runs before the plan parse so a reply
+    # carrying both blocks loses both; the decision log below still records the
+    # full `reply`, because the repo record wants what the gaffer actually said.
+    base = record_learnings(learnings, reply, msg.text, logger) \
+        if learnings is not None else reply
+
+    send_text = base
     # An iterate is a debate reply that re-emits a full plan block: it becomes
     # the new pending snapshot (fresh yes required) and the machine block is
     # stripped before Telegram (§3② — the block never reaches the human).
     if st is not None and st.phase in ("awaiting_approval", "approved", "locked"):
-        plan, stripped = parse_plan(reply)
+        plan, stripped = parse_plan(base)
         if plan is not None:
             approvals.store.void_carry(plan)
             logger.event("iterate", gw=st.gw)
@@ -102,12 +117,13 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
     return True
 
 
-def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None):
+def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None,
+              learnings=None):
     """One long-poll cycle. Returns the next offset to request."""
     for msg in telegram.get_updates(offset):
         try:
             process_message(msg, cfg, telegram, llm, logger, assembler=assembler,
-                            approvals=approvals)
+                            approvals=approvals, learnings=learnings)
         except Exception as e:  # one bad message must not kill the daemon
             logger.event("error", from_id=getattr(msg, "from_id", None),
                          error=type(e).__name__, detail=str(e))
@@ -116,14 +132,15 @@ def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None
 
 
 def run(cfg, telegram, llm, logger, should_continue=lambda: True, idle_sleep=1.0,
-        assembler=None, approvals=None):
+        assembler=None, approvals=None, learnings=None):
     """Resident loop: long-poll Telegram forever, waking on each message."""
     offset = 0
     logger.event("startup", model=cfg.model, allowlist_size=len(cfg.allowlist))
     while should_continue():
         try:
             offset = poll_once(cfg, telegram, llm, logger, offset,
-                               assembler=assembler, approvals=approvals)
+                               assembler=assembler, approvals=approvals,
+                               learnings=learnings)
         except Exception as e:  # network blip — log and keep cycling
             logger.event("poll_error", error=type(e).__name__, detail=str(e))
             time.sleep(idle_sleep)
