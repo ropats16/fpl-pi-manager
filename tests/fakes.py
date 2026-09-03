@@ -5,7 +5,7 @@ selftest uses it too) — re-exported here so tests import one name. This module
 adds the Telegram-update builder that only tests need.
 """
 
-from daemon.http import FakeTransport  # noqa: F401  (re-exported for tests)
+from daemon.http import FakeTransport, tool_call_message  # noqa: F401  (re-exported)
 
 
 def private_message(from_id, text, chat_id=None, update_id=1):
@@ -20,3 +20,4 @@ def private_message(from_id, text, chat_id=None, update_id=1):
             "text": text,
         },
     }
+

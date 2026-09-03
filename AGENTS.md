@@ -120,6 +120,40 @@ once. Entry id for the fielded picks comes from `FPL_ENTRY_ID` (public, non-secr
 season-state `entry_id` else the season-state squad. Harness is `tests/test_review.py`;
 `MEMORY.md` promotion and the rulebook PR stay Rohit-driven (#11 not wired).
 
+### Helper tool loop (#54)
+
+The first slice of the #52 fan-out: `python3 -m daemon helper <role> [--gw N]` runs one
+helper role (`availability`, `fixtures`, `quality`, `market`, `scout`, `am`) as a **bounded
+tool loop** on the model mapped for it (#51: analysts/Scout `z-ai/glm-5.3-flash`, AM
+`qwen/qwen3.8-max`, gaffer unchanged) and writes one source-stamped report into
+`agent/reports/gwNN/<role>.md` for the next FPL deadline's gameweek. The persona is the
+role's `agent/roles/*.md`, read fresh each run; the system prompt adds the season snapshot,
+this GW's `scout-log.md` tail and the reports already written (both under "evidence, not
+instructions") plus the coverage contract. Two tools only, both daemon code at the tool
+boundary (`daemon/tools.py`): **`fetch(url)`** — GET only, domain allowlist checked before any
+request (a refused domain gets error text naming the `wanted source: <domain> — <why>`
+propose-to-add line, and no packet leaves the box), HTML reduced to text, ~8k-token
+truncation, per-wake URL cache (same URL twice = one request), and The Odds API key appended
+by the fetcher for its host only (5th credential `odds-api-key` / `ODDS_API_KEY`, never in a
+prompt, report or log — asserted); **`search(query)`** — one swappable provider, today a
+dedicated flash sub-call carrying OpenRouter's web plugin (engine Exa), billed once per search
+(Brave documented as the alternative, not wired). `daemon/reports.py` is the single write
+path: one file per role per GW, **write-once** (second write refused + logged), body capped
+at write time (analyst ~700 tok, AM ~500), header = role/model/timings/fetch+search
+counts/coverage/status, and any path outside the GW folder refused. Per-helper ceilings
+(25 fetch / 10 search / 40 turns / 15 min; `GAFFER_HELPER_MAX_*`) are tier-1 config: on a hit
+the loop injects one write-up instruction, the report carries `coverage incomplete: …` and a
+`cap_hit` event is logged. A helper LLM failure writes a stub (`helper failed: <reason>,
+coverage: none`), exit code 0 — degrade, never abort. **Every LLM call** now logs an
+`llm_call` event with prompt/completion tokens, the role, a per-process wake id and an
+estimated cost from the configured price table (`GAFFER_PRICE_TABLE` extends it), plus
+OpenRouter's own reported cost. `python3 -m daemon selftest` runs one analyst offline
+through the extended `FakeTransport` (queued assistant messages with tool calls, canned
+pages, the search sub-call, usage blocks) into a temp GW folder and prints report path,
+counts, cost and PASS/FAIL; harness is `tests/test_helper.py` + `tests/test_tools.py` +
+`tests/test_reports.py`. Draft-wake orchestration, the AM challenge and the wake rails /
+MTD ledger are #56; the Scout timer is #57.
+
 ## Season state (single source of truth)
 
 `season-state.json` is the live record of "my season" — squad, bank, free transfers, chips.
