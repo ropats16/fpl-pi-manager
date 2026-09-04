@@ -26,6 +26,10 @@ class HelperCmdTest(unittest.TestCase):
             "GAFFER_REPORTS_DIR": os.path.join(self.tmp, "reports"),
             "GAFFER_PROJECTIONS_PATH": os.path.join(REPO_ROOT, "fixtures",
                                                     "projections-sample.csv"),
+            # Frozen GW1 fixture: the events-failure fallback must not read the
+            # tracked root state (rolled to GW3 on the Pi).
+            "GAFFER_STATE_PATH": os.path.join(REPO_ROOT, "fixtures",
+                                              "season-state.json"),
         }
         self.out = io.StringIO()
 

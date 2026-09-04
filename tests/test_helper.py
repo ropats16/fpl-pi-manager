@@ -54,7 +54,7 @@ class HelperHarness(unittest.TestCase):
         shutil.copyfile(os.path.join(REPO, "agent", "roles", "analyst-availability.md"),
                         os.path.join(self.ws, "roles", "analyst-availability.md"))
         self.reports = os.path.join(self.tmp, "reports")
-        self.state = os.path.join(REPO, "season-state.json")
+        self.state = os.path.join(REPO, "fixtures", "season-state.json")  # frozen GW1
         self.proj = os.path.join(REPO, "fixtures", "projections-sample.csv")
         self.logbuf = io.StringIO()
 

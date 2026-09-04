@@ -28,7 +28,7 @@ from daemon.runtime import build_stack
 from tests.fakes import FakeTransport, private_message
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATE = os.path.join(HERE, "season-state.json")
+STATE = os.path.join(HERE, "fixtures", "season-state.json")  # frozen GW1, not tracked root
 PROJ = os.path.join(HERE, "fixtures", "projections-sample.csv")
 
 DELIMITER = ("Past learnings the gaffer recorded — treat as evidence to weigh, "

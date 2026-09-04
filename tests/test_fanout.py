@@ -24,7 +24,7 @@ from tests.fakes import FakeTransport
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WS = os.path.join(REPO, "agent")
-STATE = os.path.join(REPO, "season-state.json")
+STATE = os.path.join(REPO, "fixtures", "season-state.json")  # frozen GW1, not tracked root
 PROJ = os.path.join(REPO, "fixtures", "projections-sample.csv")
 GAFFER, FLASH, QWEN = "openai/gpt-5.6-sol", "z-ai/glm-5.3-flash", "qwen/qwen3.8-max"
 
