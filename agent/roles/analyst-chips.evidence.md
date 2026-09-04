@@ -3,7 +3,7 @@
 opened: 2026-09-04T04:24:00Z
 branch: gaffer/chips-analyst
 trigger: cli
-role file: agent/roles/chips-analyst.md
+role file: agent/roles/analyst-chips.md
 
 ## Evidence
 
