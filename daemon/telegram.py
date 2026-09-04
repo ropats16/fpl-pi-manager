@@ -73,12 +73,44 @@ class Telegram:
         return resp.json()
 
     def send_message(self, chat_id, text):
-        """Send as Telegram HTML (rendered from the model's markdown). A parse
-        error must never eat the reply, so fall back to the raw text on rejection;
-        only a failed plain send raises (so the poll loop logs it)."""
-        data = self._post_message(chat_id, to_telegram_html(text), parse_mode="HTML")
-        if data.get("ok"):
-            return
-        data = self._post_message(chat_id, text)   # plain-text fallback
-        if not data.get("ok"):
-            raise TelegramError(data.get("description", "sendMessage failed"))
+        """Send as Telegram HTML (rendered from the model's markdown), in
+        order-preserving chunks under Telegram's 4096-char limit (a 07:29Z
+        2026-09-04 research reply was lost to "message is too long"). A parse
+        error must never eat the reply, so each chunk falls back to raw text on
+        rejection; only a failed plain send raises (so the poll loop logs it)."""
+        for chunk in split_message(text):
+            data = self._post_message(chat_id, to_telegram_html(chunk), parse_mode="HTML")
+            if data.get("ok"):
+                continue
+            data = self._post_message(chat_id, chunk)   # plain-text fallback
+            if not data.get("ok"):
+                raise TelegramError(data.get("description", "sendMessage failed"))
+
+
+# Telegram caps a message at 4096 chars; the HTML rendering adds tags, so the
+# raw-text chunks stay well under it.
+MAX_MESSAGE_CHARS = 4096
+CHUNK_CHARS = 3600
+
+
+def split_message(text, limit=CHUNK_CHARS):
+    """Split `text` into pieces of at most `limit` chars, preferring a
+    paragraph break, then a line break, then a hard cut. Never drops text;
+    "" -> [""] so an empty send still goes out as before."""
+    text = text or ""
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    rest = text
+    while len(rest) > limit:
+        window = rest[:limit]
+        cut = window.rfind("\n\n")
+        if cut < limit // 3:
+            cut = window.rfind("\n")
+        if cut < limit // 3:
+            cut = limit
+        chunks.append(rest[:cut].rstrip("\n"))
+        rest = rest[cut:].lstrip("\n")
+    if rest:
+        chunks.append(rest)
+    return chunks
