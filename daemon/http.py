@@ -103,10 +103,17 @@ class FakeTransport:
       fake a redirect or an error status; any other GET raises — so an
       off-allowlist fetch that *did* reach the wire is loud, and `requests` is
       the log tests assert on.
+
+    #56 extension (the draft/final fan-out drives several models through one
+    transport):
+    - `llm_replies_by_model` maps a model id to its own reply queue; a non-plugin
+      chat call whose `payload["model"]` has a non-empty queue there pops from it,
+      else falls back to the shared `llm_replies`/`llm_reply` exactly as before.
     """
 
     def __init__(self, updates_batches=None, llm_reply="ok", llm_replies=None,
-                 pages=None, search_reply="no results", usage=None):
+                 pages=None, search_reply="no results", usage=None,
+                 llm_replies_by_model=None):
         self.updates_batches = list(updates_batches or [])
         self.llm_reply = llm_reply
         # Optional queue of distinct replies, popped one per chat/completions
@@ -114,6 +121,10 @@ class FakeTransport:
         # re-generation). Falls back to `llm_reply` once drained — backward
         # compatible with callers that only set `llm_reply`.
         self.llm_replies = list(llm_replies) if llm_replies is not None else None
+        # Per-model reply queues (#56): {model: [replies]}, popped before the
+        # shared fallback. Only non-plugin chat calls consult it.
+        self.llm_replies_by_model = {m: list(v) for m, v
+                                     in (llm_replies_by_model or {}).items()}
         self.pages = dict(pages or {})
         self.search_reply = search_reply
         self.usage = dict(usage or DEFAULT_USAGE)
@@ -151,7 +162,10 @@ class FakeTransport:
                 self.search_requests.append(payload)
                 return self._chat_response(self.search_reply)
             self.llm_requests.append(payload)
-            if self.llm_replies:
+            queue = self.llm_replies_by_model.get(payload.get("model"))
+            if queue:
+                reply = queue.pop(0)
+            elif self.llm_replies:
                 reply = self.llm_replies.pop(0)
             else:
                 reply = self.llm_reply

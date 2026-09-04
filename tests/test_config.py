@@ -127,6 +127,37 @@ class HelperSettingsTest(unittest.TestCase):
         h = load_helper_settings({"GAFFER_PRICE_TABLE": "{nope"})
         self.assertIn("z-ai/glm-5.3-flash", h.prices)
 
+    def test_wake_rails_and_ledger_defaults(self):
+        h = load_config(env=_env()).helpers
+        self.assertEqual(h.wake_rails, {"calls": 200, "tokens": 5_000_000,
+                                        "cost_usd": 1.0, "minutes": 90})
+        self.assertEqual(h.ledger, {"search_off_usd": 4.0, "helpers_off_usd": 4.75})
+
+    def test_wake_rails_and_ledger_env_overrides(self):
+        h = load_helper_settings(_env(
+            GAFFER_WAKE_MAX_CALLS="50", GAFFER_WAKE_MAX_TOKENS="1000000",
+            GAFFER_WAKE_MAX_USD="0.5", GAFFER_WAKE_MAX_MINUTES="30",
+            GAFFER_LEDGER_SEARCH_OFF_USD="2", GAFFER_LEDGER_HELPERS_OFF_USD="3"))
+        self.assertEqual(h.wake_rails, {"calls": 50, "tokens": 1000000,
+                                        "cost_usd": 0.5, "minutes": 30.0})
+        self.assertEqual(h.ledger, {"search_off_usd": 2.0, "helpers_off_usd": 3.0})
+
+    def test_junk_wake_rails_fall_back_to_defaults(self):
+        h = load_helper_settings(_env(
+            GAFFER_WAKE_MAX_CALLS="0", GAFFER_WAKE_MAX_TOKENS="-1",
+            GAFFER_WAKE_MAX_USD="nope", GAFFER_WAKE_MAX_MINUTES="-2"))
+        self.assertEqual(h.wake_rails, {"calls": 200, "tokens": 5_000_000,
+                                        "cost_usd": 1.0, "minutes": 90})
+
+    def test_negative_ledger_thresholds_fall_back(self):
+        h = load_helper_settings(_env(GAFFER_LEDGER_SEARCH_OFF_USD="-1"))
+        self.assertEqual(h.ledger["search_off_usd"], 4.0)
+
+    def test_helpers_off_below_search_off_keeps_both_defaults(self):
+        h = load_helper_settings(_env(GAFFER_LEDGER_SEARCH_OFF_USD="5",
+                                      GAFFER_LEDGER_HELPERS_OFF_USD="1"))
+        self.assertEqual(h.ledger, {"search_off_usd": 4.0, "helpers_off_usd": 4.75})
+
 
 if __name__ == "__main__":
     unittest.main()

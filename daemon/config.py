@@ -49,13 +49,20 @@ DEFAULT_PRICES = {
 DEFAULT_SEARCH_COST_USD = 0.007
 DEFAULT_GITHUB_REPO = "ropats16/fpl-pi-manager"   # #55 auto-PR target (owner/name)
 
+# --- #51 ④ per-wake rails: one wake caps out on any of these (circuit breaker) ------
+DEFAULT_WAKE_RAILS = {"calls": 200, "tokens": 5_000_000, "cost_usd": 1.0, "minutes": 90}
+# --- #51 ④ MTD ledger gates: $4 → helpers lose search, $4.75 → helpers skipped -------
+# (gaffer + AM still run; the ledger is advisory spend-throttling, not a hard stop).
+DEFAULT_LEDGER_THRESHOLDS = {"search_off_usd": 4.0, "helpers_off_usd": 4.75}
+
 
 class HelperSettings:
     __slots__ = ("models", "allowlist", "caps", "prices", "search_provider",
-                 "search_model", "search_cost_usd")
+                 "search_model", "search_cost_usd", "wake_rails", "ledger")
 
     def __init__(self, models, allowlist, caps, prices, search_provider="exa",
-                 search_model=HELPER_MODEL, search_cost_usd=DEFAULT_SEARCH_COST_USD):
+                 search_model=HELPER_MODEL, search_cost_usd=DEFAULT_SEARCH_COST_USD,
+                 wake_rails=None, ledger=None):
         self.models = models
         self.allowlist = allowlist
         self.caps = caps
@@ -63,6 +70,9 @@ class HelperSettings:
         self.search_provider = search_provider
         self.search_model = search_model
         self.search_cost_usd = search_cost_usd
+        # #56: thresholds are config — per-wake rails + MTD ledger gates (#51 ④).
+        self.wake_rails = dict(DEFAULT_WAKE_RAILS) if wake_rails is None else wake_rails
+        self.ledger = dict(DEFAULT_LEDGER_THRESHOLDS) if ledger is None else ledger
 
 
 def default_helper_settings():
@@ -81,6 +91,19 @@ def _int_env(env, key, default):
     except (TypeError, ValueError):
         return default
     return v if v >= 1 else default
+
+
+def _float_env(env, key, default, minimum, inclusive=False):
+    """A float from env above `minimum` (at/above it when `inclusive`), else the
+    default — #56 posture: a malformed or out-of-range rail falls back, never
+    crashes. Rails are >0 (a 0 caps out instantly); ledger gates are >=0."""
+    try:
+        v = float(env.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    if v > minimum or (inclusive and v == minimum):
+        return v
+    return default
 
 
 def load_helper_settings(env=None):
@@ -124,6 +147,23 @@ def load_helper_settings(env=None):
         except (TypeError, ValueError):
             pass
     h.search_provider = env.get("GAFFER_SEARCH_PROVIDER", h.search_provider)
+    # #56/#51 ④ per-wake rails (ints >=1, floats >0; junk -> default per field).
+    h.wake_rails = {
+        "calls": _int_env(env, "GAFFER_WAKE_MAX_CALLS", h.wake_rails["calls"]),
+        "tokens": _int_env(env, "GAFFER_WAKE_MAX_TOKENS", h.wake_rails["tokens"]),
+        "cost_usd": _float_env(env, "GAFFER_WAKE_MAX_USD", h.wake_rails["cost_usd"], 0),
+        "minutes": _float_env(env, "GAFFER_WAKE_MAX_MINUTES", h.wake_rails["minutes"], 0),
+    }
+    # #56/#51 ④ MTD ledger gates (floats >=0). If the "helpers off" gate parses
+    # below the "search off" gate the ordering is nonsense, so keep both defaults.
+    search_off = _float_env(env, "GAFFER_LEDGER_SEARCH_OFF_USD",
+                            h.ledger["search_off_usd"], 0, inclusive=True)
+    helpers_off = _float_env(env, "GAFFER_LEDGER_HELPERS_OFF_USD",
+                             h.ledger["helpers_off_usd"], 0, inclusive=True)
+    if helpers_off < search_off:
+        search_off, helpers_off = (DEFAULT_LEDGER_THRESHOLDS["search_off_usd"],
+                                   DEFAULT_LEDGER_THRESHOLDS["helpers_off_usd"])
+    h.ledger = {"search_off_usd": search_off, "helpers_off_usd": helpers_off}
     return h
 
 

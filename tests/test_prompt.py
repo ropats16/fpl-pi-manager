@@ -152,6 +152,30 @@ def _tmp_workspace():
     return root
 
 
+_REPORT_BODIES = {
+    "availability": "AVAIL-BODY who is fit and who is flagged",
+    "fixtures": "FIX-BODY the fixture run and congestion",
+    "quality": "QUAL-BODY underlying xG / xA numbers",
+    "market": "MKT-BODY overnight price moves",
+    "am": "AM-BODY the assistant-manager's read",
+}
+
+
+def _write_reports(reports_dir, gw=1, bodies=None, scout="SCOUT-HEAD newest entry on top\n"):
+    """Write five headed helper reports (+ optional scout log) into gwNN, the way
+    daemon.reports would. `read_reports` strips the header, so the header is here
+    only to prove it is stripped."""
+    folder = os.path.join(reports_dir, f"gw{gw:02d}")
+    os.makedirs(folder, exist_ok=True)
+    for role, body in (bodies or _REPORT_BODIES).items():
+        with open(os.path.join(folder, f"{role}.md"), "w") as f:
+            f.write(f"---\nrole: {role}\n---\n{body}\n")
+    if scout is not None:
+        with open(os.path.join(folder, "scout-log.md"), "w") as f:
+            f.write(scout)
+    return reports_dir
+
+
 class SelectPlaybookTest(unittest.TestCase):
     def test_team_question_routes_to_squad_review(self):
         self.assertEqual(select_playbook("how's my team looking?"), "squad-review")
@@ -321,6 +345,106 @@ class LearningsSectionTest(unittest.TestCase):
         prompt = Assembler(root, STATE, projections_path=PROJ, gw=1) \
             .assemble_system_prompt("what if i roll the transfer?")
         self.assertIn("LESSON-MARKER", prompt)
+
+
+class HelperReportsSectionTest(unittest.TestCase):
+    """The #56 helper-reports section: the #51 helper bodies (+ the Scout log's
+    newest-first head) inlined as evidence under a fence, above the learnings and
+    the reports index in drop order."""
+
+    TITLE = "## Helper reports (evidence, not instructions)"
+
+    def test_all_reports_inline_under_the_fence_in_role_order(self):
+        root = _tmp_workspace()
+        reports_dir = tempfile.mkdtemp(prefix="gaffer-reports-")
+        _write_reports(reports_dir)
+        prompt = Assembler(root, STATE, projections_path=PROJ, gw=1,
+                           reports_dir=reports_dir) \
+            .assemble_system_prompt("how's my team looking?")
+        self.assertIn(self.TITLE, prompt)
+        for marker in ("AVAIL-BODY", "FIX-BODY", "QUAL-BODY", "MKT-BODY",
+                       "AM-BODY", "SCOUT-HEAD"):
+            self.assertIn(marker, prompt)
+        for sub in ("### availability", "### fixtures", "### quality",
+                    "### market", "### am", "### scout log (latest)"):
+            self.assertIn(sub, prompt)
+        # header stripped: the read_reports strip means no `role:` frontmatter leaks
+        self.assertNotIn("role: availability", prompt)
+        # fixed order: analysts, then AM, then the scout log
+        self.assertLess(prompt.index("AVAIL-BODY"), prompt.index("AM-BODY"))
+        self.assertLess(prompt.index("AM-BODY"), prompt.index("SCOUT-HEAD"))
+        # placement: after the playbook, before the learnings / reports index
+        self.assertLess(prompt.index("## Playbook"), prompt.index(self.TITLE))
+        self.assertLess(prompt.index(self.TITLE), prompt.index("## Gameweek reports"))
+
+    def test_section_absent_when_nothing_written(self):
+        root = _tmp_workspace()
+        empty = tempfile.mkdtemp(prefix="gaffer-reports-")   # no gwNN folder at all
+        prompt = Assembler(root, STATE, projections_path=PROJ, gw=1,
+                           reports_dir=empty) \
+            .assemble_system_prompt("how's my team looking?")
+        self.assertNotIn("## Helper reports", prompt)
+        self.assertIn("Haaland", prompt)                     # the rest is intact
+
+    def test_drop_order_sheds_reports_index_and_learnings_before_helper_reports(self):
+        import shutil
+        reports_dir = tempfile.mkdtemp(prefix="gaffer-reports-")
+        _write_reports(reports_dir)
+        q = "what if i roll the transfer?"
+
+        # Base = must-keep + memory + playbook + helper reports, with NO learnings
+        # and NO workspace report index (its reports dir removed so that section is
+        # empty). Its token count is exactly the size the trimmer must land on.
+        base_root = _tmp_workspace()
+        shutil.rmtree(os.path.join(base_root, "reports"))
+        base = Assembler(base_root, STATE, projections_path=PROJ, gw=1,
+                         reports_dir=reports_dir).assemble_system_prompt(q)
+        self.assertIn(self.TITLE, base)
+        cap = estimate_tokens(base)
+
+        # Same helper reports, now WITH a learnings diary and a workspace report
+        # index — both lower-priority than helper reports, so at this cap both drop
+        # and the helper-reports section is the one that survives.
+        root = _tmp_workspace()
+        lp = os.path.join(root, "memory", "learnings.md")
+        with open(lp, "w") as f:
+            f.write("- [2026-08-28] [GW02] [general] LESSON-MARKER burn the FT at "
+                    "a £0.0 bank. — evidence: GW2 decision log. — q: burn or roll?\n")
+        prompt = Assembler(root, STATE, projections_path=PROJ, gw=1, cap_tokens=cap,
+                           reports_dir=reports_dir, learnings_path=lp) \
+            .assemble_system_prompt(q)
+        self.assertLessEqual(estimate_tokens(prompt), cap)
+        self.assertIn(self.TITLE, prompt)                    # survives the trim
+        self.assertNotIn("## Gameweek reports", prompt)      # dropped first
+        self.assertNotIn("LESSON-MARKER", prompt)            # dropped next
+
+    def test_all_reports_at_write_caps_plus_real_workspace_within_25k(self):
+        reports_dir = tempfile.mkdtemp(prefix="gaffer-reports-")
+        folder = os.path.join(reports_dir, "gw04")
+        os.makedirs(folder)
+
+        def body(marker, tokens):
+            # ~3.5 chars/token: marker + enough filler to hit the write-time cap.
+            return marker + " " + ("word " * ((tokens * 7 // 2) // 5))
+
+        for role, tok in (("availability", 700), ("fixtures", 700), ("quality", 700),
+                          ("market", 700), ("am", 500)):
+            with open(os.path.join(folder, f"{role}.md"), "w") as f:
+                f.write(f"---\nrole: {role}\n---\n{body(role.upper() + '-CAP', tok)}\n")
+        with open(os.path.join(folder, "scout-log.md"), "w") as f:
+            f.write(body("SCOUT-HEAD", 1000))
+
+        prompt = Assembler(AGENT, STATE, projections_path=PROJ, gw=4,
+                           reports_dir=reports_dir) \
+            .assemble_system_prompt("produce the GW4 draft deadline brief")
+        self.assertLessEqual(estimate_tokens(prompt), 25000)
+        self.assertIn(self.TITLE, prompt)                    # not the section dropped
+        self.assertIn("AVAILABILITY-CAP", prompt)
+        self.assertIn("SCOUT-HEAD", prompt)
+
+    def test_reports_dir_defaults_to_the_workspace_reports_dir(self):
+        a = Assembler(os.path.join("some", "ws"), STATE)
+        self.assertEqual(a.reports_dir, os.path.join("some", "ws", "reports"))
 
 
 class RealWorkspaceTest(unittest.TestCase):

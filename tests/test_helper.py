@@ -59,7 +59,8 @@ class HelperHarness(unittest.TestCase):
         self.logbuf = io.StringIO()
 
     def _run(self, replies, caps=None, odds_key=None, pages=None, clock=None,
-             transport=None, role="availability", gw=4):
+             transport=None, role="availability", gw=4, search=True, fetch=True,
+             task=None):
         t = transport or FakeTransport(
             llm_replies=replies, search_reply="1. Isak fit — bbc.co.uk/sport/1",
             pages=pages if pages is not None else {FPL: '{"elements": []}',
@@ -71,7 +72,8 @@ class HelperHarness(unittest.TestCase):
         writer = ReportWriter(self.reports, gw, logger=logger, cap_tokens=700)
         res = run_helper(role, llm, "z-ai/glm-5.3-flash", self.ws, self.state, gw,
                          fetcher, searcher, writer, caps or CAPS, logger,
-                         projections_path=self.proj, clock=clock or _Clock())
+                         projections_path=self.proj, clock=clock or _Clock(),
+                         search=search, fetch=fetch, task=task)
         return res, t, llm
 
     def _events(self, kind=None):
@@ -272,6 +274,64 @@ class FailureTest(HelperHarness):
         self.assertEqual(second.status, "refused")
         self.assertIn("Isak", self._report(first))          # the first write stands
         self.assertEqual(len(self._events("report_refused")), 1)
+
+
+class SeamTest(HelperHarness):
+    """#56 fan-out seams: search off (MTD ledger), no-fetch/no-tools (the AM),
+    a caller-supplied task, and the Scout's append-only log."""
+
+    def test_search_off_omits_the_tool_and_a_stray_call_gets_the_off_text(self):
+        res, t, _ = self._run([_search("isak fit", "s1"), REPORT], search=False)
+        self.assertEqual(res.status, "ok")
+        tool_names = [x["function"]["name"] for x in t.llm_requests[0]["tools"]]
+        self.assertEqual(tool_names, ["fetch"])
+        self.assertIn("`search` is off", t.llm_requests[0]["messages"][0]["content"])
+        tool_msg = [m for m in t.llm_requests[-1]["messages"] if m["role"] == "tool"][0]
+        self.assertIn("search is off for this wake", tool_msg["content"])
+        self.assertIn("searches: 0", self._report(res))
+        self.assertEqual(self._events("cap_hit"), [])
+        self.assertEqual(len(t.search_requests), 0)
+
+    def test_no_tools_am_style_run_is_one_call_with_no_tools_key(self):
+        res, t, _ = self._run(["AM: hold the plan; the fixture swing is priced in.\n\n"
+                               "Coverage: read the reports and the plan."],
+                              role="am", search=False, fetch=False)
+        self.assertEqual(res.status, "ok")
+        self.assertEqual(len(t.llm_requests), 1)
+        self.assertNotIn("tools", t.llm_requests[-1])
+        self.assertEqual(res.path, os.path.join(self.reports, "gw04", "am.md"))
+        self.assertIn("no tools this run", t.llm_requests[0]["messages"][0]["content"])
+        self.assertIn("status: ok", self._report(res))
+
+    def test_fetch_off_but_search_on_gets_the_fetch_off_text_on_a_stray_call(self):
+        res, t, _ = self._run([_fetch(FPL, "c1"), REPORT], fetch=False)
+        self.assertEqual(res.status, "ok")
+        tool_names = [x["function"]["name"] for x in t.llm_requests[0]["tools"]]
+        self.assertEqual(tool_names, ["search"])
+        tool_msg = [m for m in t.llm_requests[-1]["messages"] if m["role"] == "tool"][0]
+        self.assertIn("fetch is not available to this role", tool_msg["content"])
+        self.assertEqual([u for m, u in t.requests if m == "GET"], [])
+
+    def test_task_reaches_the_user_turn_verbatim(self):
+        task = "The gaffer's plan: [PLAN]. Challenge the weakest link in one paragraph."
+        res, t, _ = self._run([REPORT], role="am", search=False, fetch=False, task=task)
+        user = [m for m in t.llm_requests[0]["messages"] if m["role"] == "user"]
+        self.assertEqual(user[0]["content"], task)
+
+    def test_scout_role_appends_to_the_log_and_a_second_run_appends_again(self):
+        r1, _, _ = self._run(["Scout entry 1: Isak fit (BBC, 3 Sep). Coverage: FPL flags."],
+                             role="scout")
+        self.assertEqual(r1.status, "ok")
+        self.assertEqual(r1.path, os.path.join(self.reports, "gw04", "scout-log.md"))
+        r2, _, _ = self._run(["Scout entry 2: Gordon knock (BBC, 4 Sep). Coverage: FFS."],
+                             role="scout")
+        self.assertEqual(r2.status, "ok")
+        with open(r2.path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("Scout entry 1", text)
+        self.assertIn("Scout entry 2", text)
+        self.assertLess(text.index("Scout entry 2"), text.index("Scout entry 1"))
+        self.assertEqual(text.count("# Scout log — GW04"), 1)
 
 
 if __name__ == "__main__":

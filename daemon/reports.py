@@ -53,6 +53,16 @@ def strip_header(text):
     return text
 
 
+def read_scout_log(reports_dir, gw):
+    """The full `scout-log.md` for the GW ("" if none). The one path callers
+    should use for the Scout log so nobody hand-rolls it (#56/#57)."""
+    path = os.path.join(gw_folder(reports_dir, gw), "scout-log.md")
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
+        return f.read().strip()
+
+
 def read_reports(reports_dir, gw):
     """{role: body} for every helper-role report in the GW folder (headers
     stripped), sorted by role. Only `<role>.md` for a known helper role counts:
@@ -83,9 +93,14 @@ class ReportWriter:
             self._logger.event(event, gw=self.gw, **fields)
 
     def path_for(self, role):
-        return os.path.join(self.folder, f"{role}.md")
+        # The Scout writes an append-only log, never a write-once <role>.md (#57).
+        name = "scout-log.md" if role == "scout" else f"{role}.md"
+        return os.path.join(self.folder, name)
 
     def exists(self, role):
+        # A log is never "already written": the Scout may append every wake (#57).
+        if role == "scout":
+            return False
         return os.path.exists(self.path_for(role))
 
     def _inside_folder(self, path):
@@ -102,6 +117,11 @@ class ReportWriter:
         if os.path.exists(path):
             self._log("report_refused", reason="exists", path=path)
             raise ReportRefused(f"refused: {path} already written (write-once)")
+        return self._atomic_write(path, text)
+
+    def _atomic_write(self, path, text):
+        """temp + replace so a crash never leaves a half report. No write-once
+        check (the Scout log is rewritten in place each append)."""
         os.makedirs(self.folder, exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -122,12 +142,45 @@ class ReportWriter:
 
     def write(self, role, body, header):
         """Write `<role>.md` once: header + capped body. Raises ReportRefused
-        (already logged) on a second write or a role name that escapes."""
+        (already logged) on a second write or a role name that escapes. The
+        Scout is the one exception — it prepends a dated entry to `scout-log.md`
+        (#57), never write-once."""
+        if role == "scout":
+            return self._append_scout(body, header)
         path = self.path_for(role)
         text = _render_header(role, header) + self._cap(role, body) + "\n"
         out = self.write_path(path, text)
         self._log("report_written", role=role, path=out,
                   tokens=estimate_tokens(text), status=(header or {}).get("status"))
+        return out
+
+    def _append_scout(self, body, header):
+        """Prepend one dated entry to `scout-log.md`, newest first, under a
+        single `# Scout log — GWNN` header (#57). ACL'd inside the GW folder and
+        atomic. Only the per-entry body is capped (`cap_tokens`); the log itself
+        is left uncapped so the season's coverage trail survives."""
+        path = self.path_for("scout")
+        if not self._inside_folder(path):
+            self._log("report_refused", reason="outside_gw_folder", path=path)
+            raise ReportRefused(f"refused: {path} is outside {self.folder}")
+        h = dict(header or {})
+        ts = h.get("finished") or h.get("started") or "n/a"
+        entry = (f"### {ts} — scout ({h.get('model', 'n/a')}; "
+                 f"fetches {h.get('fetches', 0)}; searches {h.get('searches', 0)}; "
+                 f"status {h.get('status', 'n/a')}; coverage {h.get('coverage', 'n/a')})"
+                 f"\n\n{self._cap('scout', body)}\n")
+        top = f"# Scout log — GW{self.gw:02d}\n"
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                existing = f.read()
+            nl = existing.find("\n")           # drop the single top header line
+            rest = existing[nl + 1:] if nl != -1 else ""
+            text = top + "\n" + entry + rest
+        else:
+            text = top + "\n" + entry
+        out = self._atomic_write(path, text)
+        entries = text.count(" — scout (")
+        self._log("report_appended", role="scout", path=out, entries=entries)
         return out
 
     def stub(self, role, reason, header):

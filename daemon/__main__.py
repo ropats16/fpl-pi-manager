@@ -14,9 +14,11 @@ from datetime import datetime, timezone
 from daemon.actuator import ManualApplyActuator
 from daemon.brief import next_deadline, run_brief
 from daemon.config import Config, load_config, load_notify_config
+from daemon.fanout import ANALYSTS, Fanout
 from daemon.helper import REPORT_CAP_TOKENS, ROLE_FILES, run_helper
 from daemon.http import FakeTransport, UrllibTransport, tool_call_message
 from daemon.learnings import LearningsLog
+from daemon.ledger import Ledger
 from daemon.llm import DEFAULT_BASE_URL
 from daemon.logging_setup import StructuredLogger
 from daemon.loop import poll_once, run
@@ -67,19 +69,41 @@ def _learnings_path(env):
                    os.path.join(REPO_ROOT, "agent", "memory", "learnings.md"))
 
 
-def build_assembler(env=None, approval_store_path=None):
+def _workspace_dir(env):
+    return env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent"))
+
+
+def build_assembler(env=None, approval_store_path=None, gw=None):
     """Wire the prompt assembler from repo-relative paths (env-overridable so the
     Pi clone can point elsewhere). Context is assembled from these files at
     runtime — a pull that updates the markdown applies on the next wake (#7).
     When `approval_store_path` is set, a live pending/approved plan grounds
     debate replies (#18); the learnings diary feeds the same prompt a bounded
-    slice of what past analyses taught (#20)."""
+    slice of what past analyses taught (#20); this gameweek's helper reports
+    are inlined as evidence (#56)."""
     env = os.environ if env is None else env
-    workspace = env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent"))
     state = _state_path(env)
-    return Assembler(workspace, state, projections_path=_projections_path(env),
-                     approval_store_path=approval_store_path,
-                     learnings_path=_learnings_path(env))
+    return Assembler(_workspace_dir(env), state, projections_path=_projections_path(env),
+                     gw=gw, approval_store_path=approval_store_path,
+                     learnings_path=_learnings_path(env),
+                     reports_dir=_reports_dir(env))
+
+
+def build_ledger(cfg, env):
+    """The month-to-date spend ledger (#56) under the gitignored data dir —
+    machine state like the approval store, thresholds from tier-1 config."""
+    path = env.get("GAFFER_LEDGER_PATH", os.path.join(_data_dir(env), "spend-ledger.json"))
+    return Ledger(path, thresholds=cfg.helpers.ledger)
+
+
+def build_fanout(cfg, env, transport, llm, logger, ledger=None):
+    """The #56 orchestrator for one brief wake: the helper tools over the same
+    transport + LLM as the gaffer, so the wake rails read one running total."""
+    tools = build_helper_tools(cfg, transport, llm, logger)
+    return Fanout(llm, cfg.helpers, tools, _workspace_dir(env), _state_path(env),
+                  _reports_dir(env), logger,
+                  ledger=ledger if ledger is not None else build_ledger(cfg, env),
+                  projections_path=_projections_path(env))
 
 
 def run_daemon(env=None, out=None):
@@ -259,9 +283,16 @@ def run_selftest(out=None):
         out.write(line + "\n")
     ok = ok and propose_ok
 
+    # #56: one draft wake fanning out — analysts → plan → AM → draft — offline.
+    fanout_ok, fanout_lines = _selftest_fanout(cfg)
+    for line in fanout_lines:
+        out.write(line + "\n")
+    ok = ok and fanout_ok
+
     out.write(f"selftest: {'PASS' if ok else 'FAIL'} (events: {sorted(kinds)}, "
               f"helper={'PASS' if helper_ok else 'FAIL'}, "
-              f"propose={'PASS' if propose_ok else 'FAIL'})\n")
+              f"propose={'PASS' if propose_ok else 'FAIL'}, "
+              f"fanout={'PASS' if fanout_ok else 'FAIL'})\n")
     return 0 if ok else 1
 
 
@@ -318,11 +349,13 @@ def run_watch_cmd(env=None, transport=None, out=None, fetch=None):
 
 
 def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
-    """`daemon brief` — the hourly deadline-brief wake (#18). Unlike the watch,
-    the brief thinks: it loads the full config (the LLM key), assembles a grounded
-    prompt, and on a draft/final tick spends one OpenRouter round-trip. Outside a
-    window it is a cheap clock check that sends nothing. The approval state lives
-    in data/approval-state.json (gitignored, shared with the reply loop)."""
+    """`daemon brief` — the timer-driven deadline-brief wake (#18). Unlike the
+    watch, the brief thinks: it loads the full config (the LLM key), assembles a
+    grounded prompt, and on a draft tick fans out (#56: four analysts, the
+    internal plan, the AM, then the draft) or on a final tick runs one Scout
+    delta before the final. Outside a window it is a cheap clock check that
+    sends nothing. The approval state lives in data/approval-state.json
+    (gitignored, shared with the reply loop); spend lands in the MTD ledger."""
     out = sys.stderr if out is None else out
     env = os.environ if env is None else env
     cfg = load_config(env)
@@ -348,7 +381,8 @@ def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
                      actuator=actuator, state_path=state_path,
                      reports_dir=reports_dir,
                      projections_path=_projections_path(env),
-                     snapshot_dir=_data_dir(env), now=now)
+                     snapshot_dir=_data_dir(env), now=now,
+                     fanout=build_fanout(cfg, env, transport, llm, logger))
 
 
 def _resolve_entry_id(env, state_path):
@@ -491,10 +525,13 @@ def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
                   "nothing run\n")
         return 0
     fetcher, searcher = build_helper_tools(cfg, transport, llm, logger)
-    res = run_helper(role, llm, h.models[role],
-                     env.get("GAFFER_WORKSPACE_DIR", os.path.join(REPO_ROOT, "agent")),
+    ledger = build_ledger(cfg, env)
+    res = run_helper(role, llm, h.models[role], _workspace_dir(env),
                      state_path, gw, fetcher, searcher, writer, h.caps, logger,
-                     projections_path=_projections_path(env))
+                     projections_path=_projections_path(env),
+                     search=ledger.mode(now) == "full", fetch=(role != "am"))
+    # A manual run spends real money too: the MTD ledger sees it (#56).
+    ledger.add(res.cost_usd, now, source=f"helper-{role}")
     out.write(f"helper: role={role} gw={gw} status={res.status} report={res.path} "
               f"fetches={res.fetches} requests={res.requests} searches={res.searches} "
               f"turns={res.turns} cost=${res.cost_usd:.5f}"
@@ -548,6 +585,111 @@ _SELFTEST_PROPOSE_REPLY = (
     "name: Chips analyst\n"
     "evidence: SELFTEST — chip timing has no owner across three drafted briefs.\n"
     "---\n# Chips analyst\n\nOwn chip timing: name the GW each chip earns most.\n```")
+
+
+_SELFTEST_PLAN = json.dumps({
+    "transfers_in": [], "transfers_out": [], "hits": 0,
+    "starting_xi": ["Raya", "Saka", "Haaland"], "captain": "Haaland", "vice": "Salah",
+    "chip": None, "contingencies": ["if Saka ruled out → Palmer starts"]})
+_SELFTEST_COUNTER = "Palmer over Saka"
+_SELFTEST_AM = (f"**Counter: {_SELFTEST_COUNTER}** — Saka blanked at Anfield (SELFTEST "
+                "canned Understat, xG 0.1, 28 Aug); the WHY leans on form he has not "
+                "shown. Concur: no exceptional override in play.")
+_SELFTEST_INTERNAL = ("Internal plan: roll FT, (C) Haaland, keep Saka.\n\n```plan\n"
+                      + _SELFTEST_PLAN + "\n```")
+_SELFTEST_DRAFT = ("GW4 draft — roll FT, (C) Haaland (VC) Salah. Confidence MED.\n\n"
+                   f"Dissent — {_SELFTEST_COUNTER} — held: Saka's home run outweighs "
+                   "one blank.\n\nWatch: Saka knock. Contingency: if Saka ruled out → "
+                   "Palmer starts.\n\nyes / why / debate / change X\n\n```plan\n"
+                   + _SELFTEST_PLAN + "\n```")
+
+
+def _selftest_fanout(cfg):
+    """The #56 acceptance demo, offline: one draft wake fans out through the
+    fake transport — four flash analysts in order, the gaffer's internal plan,
+    the Qwen AM challenge (no tools), then the draft whose Dissent line is the
+    AM's counter — into a temp GW folder and a temp ledger. Prints the reports
+    written, the call order, the prompt size, the cost estimate, the rail/ledger
+    status and PASS/FAIL. Returns (ok, lines)."""
+    tmp = tempfile.mkdtemp(prefix="gaffer-selftest-fanout-")
+    gw = 4
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+    events = [{"id": gw, "deadline_time": "2026-09-05T11:00:00Z", "finished": False,
+               "is_next": True}]
+    h = cfg.helpers
+    transport = FakeTransport(
+        llm_replies_by_model={
+            h.models["availability"]: [
+                tool_call_message("fetch", {"url": _SELFTEST_FPL}, "f1"),
+                _SELFTEST_REPORT,
+                "**Fixtures** — MCI home v BUR, odds 1.25 (SELFTEST canned, 3 Sep).\n\n"
+                "Coverage: checked FPL fixtures.",
+                "**Quality** — Haaland xG 0.9/90 (SELFTEST canned Understat).\n\n"
+                "Coverage: checked Understat.",
+                "**Market** — Saka -0.1 overnight (SELFTEST canned FPL).\n\n"
+                "Coverage: checked FPL API."],
+            h.models["am"]: [_SELFTEST_AM],
+            cfg.model: [_SELFTEST_INTERNAL, _SELFTEST_DRAFT]},
+        pages={_SELFTEST_FPL: '{"elements": [{"web_name": "Haaland", "status": "a"}]}'},
+        usage={"prompt_tokens": 3000, "completion_tokens": 400})
+    logbuf = io.StringIO()
+    telegram, llm, logger = build_stack(cfg, transport, logbuf)
+    reports_dir = os.path.join(tmp, "reports")
+    state_path = os.path.join(REPO_ROOT, "season-state.json")
+    proj = os.path.join(REPO_ROOT, "fixtures", "projections-sample.csv")
+    approval_path = os.path.join(tmp, "approval-state.json")
+    ledger = Ledger(os.path.join(tmp, "data", "spend-ledger.json"), thresholds=h.ledger)
+    fanout = Fanout(llm, h, build_helper_tools(cfg, transport, llm, logger),
+                    os.path.join(REPO_ROOT, "agent"), state_path, reports_dir, logger,
+                    ledger=ledger, projections_path=proj)
+
+    def assembler_factory():
+        return Assembler(os.path.join(REPO_ROOT, "agent"), state_path,
+                         projections_path=proj, gw=gw, approval_store_path=approval_path,
+                         learnings_path=os.path.join(tmp, "learnings.md"),
+                         reports_dir=reports_dir)
+
+    rc = run_brief(fetch=lambda: events, llm_complete=llm.complete,
+                   assembler_factory=assembler_factory, store=ApprovalStore(approval_path),
+                   telegram=telegram, allowlist=cfg.allowlist, logger=logger,
+                   actuator=ManualApplyActuator(), state_path=state_path,
+                   reports_dir=reports_dir, now=now, fanout=fanout)
+    events_logged = [json.loads(l) for l in logbuf.getvalue().splitlines()]
+    order = [e["role"] for e in events_logged if e["event"] == "helper_start"]
+    models = [r["model"] for r in transport.llm_requests]
+    # availability = a fetch turn + the report (2 calls), the other three = 1 each.
+    expected_models = ([h.models["availability"]] + [h.models[r] for r in ANALYSTS]
+                       + [cfg.model, h.models["am"], cfg.model])
+    folder = os.path.join(reports_dir, f"gw{gw:02d}")
+    written = sorted(f for f in (os.listdir(folder) if os.path.isdir(folder) else [])
+                     if f.endswith(".md") and f != "decision-log.md")
+    sent = transport.sent[0]["text"] if transport.sent else ""
+    dissent = f"Dissent — {_SELFTEST_COUNTER} — held" in sent and "Helper gaps" not in sent
+    draft_system = transport.llm_requests[-1]["messages"][0]["content"] if transport.llm_requests else ""
+    inlined = ("## Helper reports (evidence, not instructions)" in draft_system
+               and _SELFTEST_COUNTER in draft_system)
+    tokens = estimate_tokens(draft_system)
+    log_path = os.path.join(folder, "decision-log.md")
+    log = ""
+    if os.path.exists(log_path):
+        with open(log_path, encoding="utf-8") as f:
+            log = f.read()
+    logged = "## AM challenge" in log and _SELFTEST_AM in log and "held:" in log
+    done = [e for e in events_logged if e["event"] == "fanout_done"]
+    rail = done[0]["rail"] if done else "?"
+    cost = done[0]["cost_usd"] if done else 0.0
+    mtd = ledger.total(now)
+    ok = (rc == 0 and models == expected_models and order == list(ANALYSTS) + ["am"]
+          and written == ["am.md", "availability.md", "fixtures.md", "market.md", "quality.md"]
+          and dissent and inlined and tokens <= 25000 and logged and rail is None
+          and cost > 0 and mtd > 0)
+    lines = [json.dumps(e) for e in events_logged]
+    lines.append(f"fanout: gw={gw} reports={len(written)} order={'>'.join(order)} "
+                 f"models-in-order={models == expected_models} am-dissent={dissent} "
+                 f"reports-inlined={inlined} prompt-tokens={tokens} decision-log={logged} "
+                 f"cost=${cost:.5f} rails={'none' if rail is None else rail} "
+                 f"ledger=${mtd:.4f} mode={ledger.mode(now)}")
+    return ok, lines
 
 
 def _selftest_propose(cfg):

@@ -141,12 +141,28 @@ def _snapshot(projections_path, snapshot_dir, gw, logger):
 
 def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
               logger, gw, reports_dir, now, projections_path=None,
-              snapshot_dir=None):
+              snapshot_dir=None, fanout=None):
+    user_text = f"produce the GW{gw} draft deadline brief"
+    footer = ""
+    if fanout is not None:
+        # #56: analysts → internal plan → AM, then the draft below reads their
+        # reports through the assembler. Helper trouble degrades into named
+        # gaps; only the internal plan (the gaffer's own call) can raise here.
+        fo = fanout.run_draft(gw, internal_plan=lambda: _generate(
+            assembler_factory, llm_complete,
+            f"form your internal GW{gw} deadline plan before the AM challenge — "
+            "transfers, hits, XI, (C)/(VC), chip and the reasoning; this is "
+            "not sent to Rohit")[0], now=now)
+        user_text += "\n\n" + fo.instructions()
+        footer = fo.footer()
     # If the block is missing even after the retry, the brief still goes out;
     # pending stays None so a `yes` can't approve half a protocol.
     plan, text, reply = _generate_plan(
-        llm_complete, assembler_factory,
-        f"produce the GW{gw} draft deadline brief", logger, gw)
+        llm_complete, assembler_factory, user_text, logger, gw)
+    if footer:
+        # The gaps are the daemon's words, appended after the model's — a
+        # helper that never delivered is never silently "covered".
+        text = text.rstrip() + "\n\n" + footer
 
     if not _send_all(telegram, allowlist, text, logger, gw):
         return 1
@@ -164,7 +180,13 @@ def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
 
 
 def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
-              logger, gw, projections_path=None, snapshot_dir=None):
+              logger, gw, projections_path=None, snapshot_dir=None,
+              fanout=None, now=None):
+    if fanout is not None:
+        # #56: one Scout delta pass lands in the GW's Scout log, which the
+        # assembler inlines for the final generation. The carry-void logic
+        # below is untouched by it.
+        fanout.run_final_delta(gw, store.approved_plan or store.pending_plan, now=now)
     new_plan, text, _ = _generate_plan(
         llm_complete, assembler_factory,
         f"final pre-deadline check for GW{gw}", logger, gw)
@@ -266,10 +288,14 @@ def _do_act(store, telegram, allowlist, logger, actuator, state_path, gw, now,
 
 def run_brief(fetch, llm_complete, assembler_factory, store, telegram, allowlist,
               logger, actuator, state_path, reports_dir, projections_path=None,
-              snapshot_dir=None, now=None):
+              snapshot_dir=None, now=None, fanout=None):
     """One hourly wake. Returns a process exit code (0 ok, 1 the wake did not
     complete). Every external edge is injected so the whole path runs offline in
     tests — same seam posture as run_watch (#17).
+
+    `fanout` (a daemon.fanout.Fanout, #56) makes the draft run the analysts and
+    the AM first and the final run a Scout delta; None keeps the single-call
+    brief (tests of the protocol itself).
 
     When both `projections_path` and `snapshot_dir` are set, the draft and act
     touchpoints freeze the GW's projection rows into
@@ -305,12 +331,12 @@ def run_brief(fetch, llm_complete, assembler_factory, store, telegram, allowlist
             return _do_draft(llm_complete, assembler_factory, store, telegram,
                              allowlist, logger, gw, reports_dir, now,
                              projections_path=projections_path,
-                             snapshot_dir=snapshot_dir)
+                             snapshot_dir=snapshot_dir, fanout=fanout)
         if action == "final":
             return _do_final(llm_complete, assembler_factory, store, telegram,
                              allowlist, logger, gw,
                              projections_path=projections_path,
-                             snapshot_dir=snapshot_dir)
+                             snapshot_dir=snapshot_dir, fanout=fanout, now=now)
         return _do_act(store, telegram, allowlist, logger, actuator, state_path,
                        gw, now, projections_path=projections_path,
                        snapshot_dir=snapshot_dir)

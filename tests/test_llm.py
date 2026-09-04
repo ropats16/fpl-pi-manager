@@ -138,5 +138,45 @@ class UsageAndCostTest(unittest.TestCase):
         self.assertEqual(call["role"], "gaffer")
 
 
+class PerModelRepliesTest(unittest.TestCase):
+    """FakeTransport per-model reply queues (#56): the fan-out drives several
+    models through one transport, each needing its own scripted replies."""
+
+    def _q(self, llm, model):
+        return llm.chat([{"role": "user", "content": "q"}], model=model).content
+
+    def test_per_model_queue_pops_before_the_shared_fallback(self):
+        fake = FakeTransport(llm_reply="SHARED",
+                             llm_replies_by_model={"model-a": ["A1", "A2"]})
+        llm = LLM(api_key="K", transport=fake)
+        self.assertEqual(self._q(llm, "model-a"), "A1")
+        self.assertEqual(self._q(llm, "model-a"), "A2")
+        self.assertEqual(self._q(llm, "model-a"), "SHARED")   # queue drained
+        self.assertEqual(self._q(llm, "model-b"), "SHARED")   # never in the map
+
+    def test_absent_model_falls_back_to_shared_llm_replies(self):
+        fake = FakeTransport(llm_replies=["S1", "S2"],
+                             llm_replies_by_model={"model-a": ["A1"]})
+        llm = LLM(api_key="K", transport=fake)
+        self.assertEqual(self._q(llm, "model-b"), "S1")
+        self.assertEqual(self._q(llm, "model-a"), "A1")
+        self.assertEqual(self._q(llm, "model-b"), "S2")
+
+    def test_model_is_recorded_in_llm_requests(self):
+        fake = FakeTransport(llm_replies_by_model={"model-a": ["A1"]})
+        llm = LLM(api_key="K", transport=fake)
+        self._q(llm, "model-a")
+        self.assertEqual(fake.llm_requests[-1]["model"], "model-a")
+
+    def test_plugin_search_call_ignores_the_per_model_map(self):
+        fake = FakeTransport(search_reply="1. Isak fit — bbc.co.uk",
+                             llm_replies_by_model={"z-ai/glm-5.3-flash": ["SHOULD-NOT-USE"]})
+        llm = LLM(api_key="K", transport=fake)
+        reply = llm.chat([{"role": "user", "content": "isak?"}], model="z-ai/glm-5.3-flash",
+                         plugins=[{"id": "web", "engine": "exa", "max_results": 5}])
+        self.assertIn("Isak fit", reply.content)
+        self.assertEqual(fake.llm_replies_by_model["z-ai/glm-5.3-flash"], ["SHOULD-NOT-USE"])
+
+
 if __name__ == "__main__":
     unittest.main()
