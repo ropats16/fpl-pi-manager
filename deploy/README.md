@@ -59,12 +59,15 @@ sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-brief.service  /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-brief.timer    /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-review.service /etc/systemd/system/
 sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-review.timer   /etc/systemd/system/
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-scout.service  /etc/systemd/system/
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-scout.timer    /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fpl-gaffer.service
 sudo systemctl enable --now fpl-gaffer-pull.timer
 sudo systemctl enable --now fpl-gaffer-watch.timer
 sudo systemctl enable --now fpl-gaffer-brief.timer
 sudo systemctl enable --now fpl-gaffer-review.timer
+sudo systemctl enable --now fpl-gaffer-scout.timer
 ```
 
 Add `github-token` and `fpl-cookie` credentials the same way (step 4) when the
@@ -114,7 +117,8 @@ sudo systemd-run --uid=gaffer --gid=gaffer --wait --pipe --collect \
 ```
 
 `fpl-gaffer-brief.service` carries the `odds-api-key` load line (the unit that
-will run the #56 fan-out); the Scout timer (#57) gets it too. A
+runs the #56 fan-out); `fpl-gaffer-scout.service` (the daily Scout timer, #57 —
+see [its section](#daily-scout-timer-57)) carries it too. A
 `LoadCredentialEncrypted` line for a file that does not exist fails the unit, so
 provision the key before installing a unit that names it.
 
@@ -221,8 +225,8 @@ journalctl -u fpl-gaffer-review -n 20             # review_wake / review_quiet /
 model and writes `agent/reports/gwNN/<role>.md` for the next FPL deadline's GW
 (write-once — delete the file to re-run; the Scout appends to `scout-log.md`
 instead). The draft wake runs the four analysts + the AM itself (#56, below); the
-daily Scout timer is #57. To run one by hand on the Pi with the daemon's config
-and credentials:
+daily Scout timer wakes the Scout on its own (#57, [below](#daily-scout-timer-57)).
+To run one by hand on the Pi with the daemon's config and credentials:
 
 ```sh
 sudo systemd-run --uid=gaffer --gid=gaffer --pipe --wait --collect \
@@ -253,6 +257,63 @@ challenge, draft). Spend: `data/spend-ledger.json` — check it with
 lose search, at $4.75 they are skipped (gaffer + AM still run). Rails and
 thresholds are `gaffer.env` overrides (`GAFFER_WAKE_MAX_*`, `GAFFER_LEDGER_*`).
 To rerun a draft's helpers by hand, delete the report files first (write-once).
+
+## Daily Scout timer (#57)
+
+`fpl-gaffer-scout.timer` wakes `python3 -m daemon scout` **once a day at 04:30
+UTC (= 10:00 IST)** — after the overnight FPL price changes settle (~01:30 UTC).
+Each wake runs the Scout helper (`z-ai/glm-5.3-flash`, fetch + search, the same
+per-helper ceilings as any helper) for the next unfinished GW and **appends** one
+dated entry to `agent/reports/gwNN/scout-log.md` (newest first, ~250-token cap,
+never overwrites — a second run the same day appends again; the GW folder is made
+if absent). The task carries the current pending/approved plan summary (from
+`data/approval-state.json`, when it is for that GW) so the Scout can judge
+plan-voiding news; anything that could void the plan is tagged **URGENT**, the
+daemon logs a `scout_urgent` event and the next draft/final brief footer carries
+`⚠ Scout URGENT: <line>`. This daily log is what the #56 draft fan-out's analysts
+read (Scout tail inlined in their prompts and the gaffer's "Helper reports"
+section), so a Tuesday knock is on the table Thursday. Wake rails + MTD ledger
+apply as for any helper step (`search_off` → no search; `helpers_off` → stub
+entry, no LLM call); a Scout failure writes a stub entry and exits 0.
+
+`fpl-gaffer-scout.service` loads the `telegram-token`, `openrouter-key` and the
+optional `odds-api-key` credentials — provision the Odds key via the step-4
+credstore instructions above (the `odds-api-key` paragraph); without it the
+fixtures/odds fetch degrades to a coverage gap. Install (once, by hand — the
+pull path does not install units):
+
+```sh
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-scout.service /etc/systemd/system/
+sudo cp /opt/fpl-gaffer/deploy/fpl-gaffer-scout.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now fpl-gaffer-scout.timer
+systemctl list-timers fpl-gaffer-scout.timer
+```
+
+Run one by hand on the Pi with the daemon's config and credentials:
+
+```sh
+sudo systemd-run --uid=gaffer --gid=gaffer --pipe --wait --collect \
+  -p WorkingDirectory=/opt/fpl-gaffer -p EnvironmentFile=/etc/fpl-gaffer/gaffer.env \
+  -p LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token \
+  -p LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key \
+  -p LoadCredentialEncrypted=odds-api-key:/etc/credstore.encrypted/odds-api-key \
+  /usr/bin/python3 -m daemon scout
+```
+
+Read the log:
+
+```sh
+journalctl -u fpl-gaffer-scout.service -n 20   # llm_call / fetch / search / scout_urgent,
+                                               # then one `scout: gw=… status=… log=… urgent=…` line
+```
+
+The **`scout` units are new**: the pull path only restarts the running daemon, it
+does not install units, so the one-time `cp` + `enable --now` above must be run by
+hand on the Pi once — and, as for every unit, a **change** to
+`fpl-gaffer-scout.{service,timer}` after a merge must be re-`cp`'d by hand
+(see [Applying updates](#applying-updates-self-test-gated-auto-reload)); code and
+markdown self-heal via the timer, unit files do not.
 
 ## Applying updates (self-test-gated auto-reload)
 

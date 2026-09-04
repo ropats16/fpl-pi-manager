@@ -25,7 +25,7 @@ from daemon.loop import poll_once, run
 from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
 from daemon.propose import FakeGitHost, Proposal, make_proposer, run_propose
-from daemon.reports import ReportWriter
+from daemon.reports import ReportWriter, read_scout_log, scout_entries
 from daemon.review import ReviewStore, run_review
 from daemon.runtime import build_git_host, build_helper_tools, build_stack
 from daemon.telegram import Telegram
@@ -96,14 +96,24 @@ def build_ledger(cfg, env):
     return Ledger(path, thresholds=cfg.helpers.ledger)
 
 
-def build_fanout(cfg, env, transport, llm, logger, ledger=None):
+def build_fanout(cfg, env, transport, llm, logger, ledger=None, clock=None):
     """The #56 orchestrator for one brief wake: the helper tools over the same
     transport + LLM as the gaffer, so the wake rails read one running total."""
     tools = build_helper_tools(cfg, transport, llm, logger)
     return Fanout(llm, cfg.helpers, tools, _workspace_dir(env), _state_path(env),
                   _reports_dir(env), logger,
                   ledger=ledger if ledger is not None else build_ledger(cfg, env),
-                  projections_path=_projections_path(env))
+                  projections_path=_projections_path(env), clock=clock)
+
+
+def _clock_from(now):
+    """A ticking clock that starts at an injected `now` (tests, selftest), so
+    report stamps follow the wake's nominal time while caps still measure
+    real elapsed time. None -> the real clock."""
+    if now is None:
+        return None
+    real_start = datetime.now(timezone.utc)
+    return lambda: now + (datetime.now(timezone.utc) - real_start)
 
 
 def run_daemon(env=None, out=None):
@@ -289,10 +299,17 @@ def run_selftest(out=None):
         out.write(line + "\n")
     ok = ok and fanout_ok
 
+    # #57: the daily Scout wake twice into one log — newest first, URGENT flagged.
+    scout_ok, scout_lines = _selftest_scout(cfg)
+    for line in scout_lines:
+        out.write(line + "\n")
+    ok = ok and scout_ok
+
     out.write(f"selftest: {'PASS' if ok else 'FAIL'} (events: {sorted(kinds)}, "
               f"helper={'PASS' if helper_ok else 'FAIL'}, "
               f"propose={'PASS' if propose_ok else 'FAIL'}, "
-              f"fanout={'PASS' if fanout_ok else 'FAIL'})\n")
+              f"fanout={'PASS' if fanout_ok else 'FAIL'}, "
+              f"scout={'PASS' if scout_ok else 'FAIL'})\n")
     return 0 if ok else 1
 
 
@@ -469,6 +486,80 @@ def _current_gw(state_path):
         return None
 
 
+def _gw_flag(args, cmd, out):
+    """`--gw N` off a subcommand's argv: (gw or None, error rc or None)."""
+    if "--gw" not in args:
+        return None, None
+    try:
+        return int(args[args.index("--gw") + 1]), None
+    except (IndexError, ValueError):
+        out.write(f"{cmd}: --gw needs an integer\n")
+        return None, 2
+
+
+def _resolve_gw(gw, fetch_events, now, state_path, logger):
+    """The helper/Scout gameweek: an explicit `--gw`, else the next unfinished
+    FPL deadline (like the brief), else the season-state current_gw when the
+    events fetch fails. None when nothing resolves."""
+    if gw is not None:
+        return gw
+    if fetch_events is None:
+        def fetch_events():
+            return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))["events"]
+    try:
+        nd = next_deadline(fetch_events(), now)
+        gw = nd[0] if nd else None
+    except Exception as e:                # noqa: BLE001 — fall back to season state
+        logger.event("helper_events_error", error=type(e).__name__, detail=str(e))
+    return gw if gw is not None else _current_gw(state_path)
+
+
+def _current_plan(env, gw):
+    """The pending/approved plan for `gw` from the approval store, or None —
+    the thing the Scout judges plan-voiding news against (#57)."""
+    store = ApprovalStore(_approval_state_path(env)).load()
+    if store.gw != gw:
+        return None
+    return store.approved_plan or store.pending_plan
+
+
+def run_scout_cmd(args, env=None, transport=None, out=None, fetch_events=None,
+                  now=None):
+    """`daemon scout [--gw N]` — the daily Scout wake (#57): one Scout tool
+    loop for the next unfinished gameweek against the current plan, appended
+    (newest first) to that GW's scout-log.md; an URGENT finding is logged as
+    `scout_urgent` for the brief to surface. Same rails, ledger gating and
+    stub-on-failure as a fan-out step; exit 0 unless the invocation is bad."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    args = list(args or [])
+    gw, rc = _gw_flag(args, "scout", out)
+    if rc:
+        return rc
+
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    _, llm, logger = build_stack(cfg, transport, out)
+    clock = _clock_from(now)
+    now = now or datetime.now(timezone.utc)
+    gw = _resolve_gw(gw, fetch_events, now, _state_path(env), logger)
+    if gw is None:
+        out.write("scout: could not determine the gameweek (pass --gw N)\n")
+        return 2
+
+    fanout = build_fanout(cfg, env, transport, llm, logger, clock=clock)
+    # The step settles its own spend into the ledger (no gaffer call follows).
+    res = fanout.run_daily_scout(gw, _current_plan(env, gw), now=now)
+    r = res.results[0]
+    entries = len(scout_entries(read_scout_log(_reports_dir(env), gw)))
+    out.write(f"scout: gw={gw} status={r.status} log={r.path} entries={entries} "
+              f"urgent={bool(res.urgent)} fetches={r.fetches} searches={r.searches} "
+              f"turns={r.turns} cost=${res.cost_usd:.5f}"
+              + (f" cap={r.cap}" if r.cap else "")
+              + (f" reason={r.reason}" if r.reason else "") + "\n")
+    return 0
+
+
 def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
                    now=None):
     """`daemon helper <role> [--gw N]` — run one helper role by name as a
@@ -486,13 +577,9 @@ def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
         out.write(f"helper: unknown role {role!r}; known roles: "
                   f"{', '.join(ROLE_FILES)}\n")
         return 2
-    gw = None
-    if "--gw" in args:
-        try:
-            gw = int(args[args.index("--gw") + 1])
-        except (IndexError, ValueError):
-            out.write("helper: --gw needs an integer\n")
-            return 2
+    gw, rc = _gw_flag(args, "helper", out)
+    if rc:
+        return rc
 
     cfg = load_config(env)
     transport = UrllibTransport() if transport is None else transport
@@ -500,17 +587,7 @@ def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
     state_path = _state_path(env)
     now = now or datetime.now(timezone.utc)
 
-    if gw is None:
-        if fetch_events is None:
-            def fetch_events():
-                return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))["events"]
-        try:
-            nd = next_deadline(fetch_events(), now)
-            gw = nd[0] if nd else None
-        except Exception as e:            # noqa: BLE001 — fall back to season state
-            logger.event("helper_events_error", error=type(e).__name__, detail=str(e))
-        if gw is None:
-            gw = _current_gw(state_path)
+    gw = _resolve_gw(gw, fetch_events, now, state_path, logger)
     if gw is None:
         out.write("helper: could not determine the gameweek (pass --gw N)\n")
         return 2
@@ -692,6 +769,63 @@ def _selftest_fanout(cfg):
     return ok, lines
 
 
+def _selftest_scout(cfg):
+    """The #57 acceptance demo, offline: `daemon scout` twice on one day into
+    a temp GW folder — two entries in one log, newest first, the second one
+    URGENT and flagged as a `scout_urgent` event. Returns (ok, lines)."""
+    tmp = tempfile.mkdtemp(prefix="gaffer-selftest-scout-")
+    gw = 4
+    now = datetime(2026, 9, 4, 4, 30, tzinfo=timezone.utc)
+    events = [{"id": gw, "deadline_time": "2026-09-05T11:00:00Z", "finished": False,
+               "is_next": True}]
+    env = {"GAFFER_ALLOWLIST_USER_IDS": "1", "TELEGRAM_BOT_TOKEN": "T",
+           "OPENROUTER_API_KEY": "K", "GAFFER_REPORTS_DIR": os.path.join(tmp, "reports"),
+           "GAFFER_DATA_DIR": os.path.join(tmp, "data"),
+           "GAFFER_APPROVAL_STATE_PATH": os.path.join(tmp, "approval-state.json"),
+           "GAFFER_PROJECTIONS_PATH": os.path.join(REPO_ROOT, "fixtures",
+                                                   "projections-sample.csv"),
+           "GAFFER_MODEL": cfg.model}
+    ApprovalStore(env["GAFFER_APPROVAL_STATE_PATH"]).set_pending(
+        gw, {"transfers_in": [], "transfers_out": [], "hits": 0, "starting_xi": [],
+             "captain": "Haaland", "vice": "Saka", "chip": None, "contingencies": []})
+    replies = ["Morning sweep: all owned starters trained (SELFTEST canned FFS, 4 Sep).\n\n"
+               "Coverage: FPL flags, FFS team news.",
+               "**URGENT**: Saka out 3 weeks (SELFTEST canned presser, 4 Sep) — voids the "
+               "(VC).\n\nCoverage: presser, FPL flags."]
+    logbuf = io.StringIO()
+    rcs, tasks = [], []
+    for i, reply in enumerate(replies):
+        transport = FakeTransport(llm_replies=[reply],
+                                  usage={"prompt_tokens": 2000, "completion_tokens": 200})
+        rcs.append(run_scout_cmd([], env=env, transport=transport, out=logbuf,
+                                 fetch_events=lambda: events,
+                                 now=now.replace(hour=4 + 6 * i)))
+        tasks.append(transport.llm_requests[0]["messages"][-1]["content"]
+                     if transport.llm_requests else "")
+    log_path = os.path.join(tmp, "reports", f"gw{gw:02d}", "scout-log.md")
+    log = ""
+    if os.path.exists(log_path):
+        with open(log_path, encoding="utf-8") as f:
+            log = f.read()
+    entries = len(scout_entries(log))
+    newest_first = ("URGENT" in log and "Morning sweep" in log
+                    and log.index("URGENT") < log.index("Morning sweep"))
+    raw = logbuf.getvalue().splitlines()
+    events_logged = [json.loads(l) for l in raw if l.startswith("{")]
+    urgent = [e for e in events_logged if e["event"] == "scout_urgent"]
+    summaries = [l for l in raw if l.startswith("scout: ")]
+    plan_in_task = all("(C) Haaland" in t and "URGENT" in t for t in tasks)
+    cost = sum(float(l.split("cost=$")[1].split()[0]) for l in summaries) if summaries else 0.0
+    ok = (rcs == [0, 0] and entries == 2 and newest_first and len(urgent) == 1
+          and "Saka out 3 weeks" in urgent[0].get("line", "") and plan_in_task
+          and len(summaries) == 2 and "urgent=True" in summaries[1] and cost > 0)
+    lines = [json.dumps(e) for e in events_logged]
+    lines.append(f"scout: gw={gw} entries={entries} newest-first={newest_first} "
+                 f"urgent={len(urgent) == 1} plan-in-task={plan_in_task} "
+                 f"log={log_path} cost=${cost:.5f}")
+    return ok, lines
+
+
 def _selftest_propose(cfg):
     """The #55 acceptance demo, offline: `propose role: …` in chat -> the block
     format rides in the user turn -> the canned reply's block is stripped ->
@@ -741,6 +875,8 @@ def main(argv):
         return run_review_cmd()
     if len(argv) > 1 and argv[1] == "helper":
         return run_helper_cmd(argv[2:])
+    if len(argv) > 1 and argv[1] == "scout":
+        return run_scout_cmd(argv[2:])
     return run_daemon()
 
 

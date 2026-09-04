@@ -31,7 +31,8 @@ from datetime import datetime, timezone
 
 from daemon.helper import REPORT_CAP_TOKENS, HelperResult, run_helper
 from daemon.plan import append_decision_log, parse_plan, plan_summary
-from daemon.reports import ReportRefused, ReportWriter, strip_header
+from daemon.reports import (ReportRefused, ReportWriter, latest_scout_entry,
+                            strip_header, urgent_line)
 
 ANALYSTS = ("availability", "fixtures", "quality", "market")
 AM_UNAVAILABLE = "AM unavailable"
@@ -48,6 +49,14 @@ _SCOUT_DELTA_TASK = ("Delta pass before the GW{gw} final: what has changed since
                      "transfers, prices? Flag anything that could void the plan as "
                      "URGENT. Log only the delta, not a fresh sweep.\n\n"
                      "## Draft plan\n\n{plan}")
+
+_SCOUT_DAILY_TASK = ("Daily sweep for GW{gw} ({date}): what is new since your last entry "
+                     "below — pressers, knocks, suspensions, price moves, rotation hints "
+                     "on owned players, the captain and the planned transfers? Flag "
+                     "anything that could void the current plan as URGENT. Log only "
+                     "what is new; say what you checked and found nothing on.\n\n"
+                     "## Current plan\n\n{plan}")
+_NO_PLAN = "(no plan on record yet for this gameweek)"
 
 _DISSENT_RULE = ("The helper reports for this wake are in the \"Helper reports\" "
                  "section. Fill the Dissent line with the AM's single strongest "
@@ -114,6 +123,7 @@ class FanoutResult:
         self.cost_usd = 0.0
         self.plan_text = None      # the gaffer's internal plan (draft only)
         self.am_counter = None     # the AM report body, or None when unavailable
+        self.urgent = None         # the newest Scout entry's URGENT line, if any (#57)
 
     @property
     def am_available(self):
@@ -134,6 +144,9 @@ class FanoutResult:
         """Extra lines for the gaffer's user turn: the Dissent rule and any gaps
         to name in Watch."""
         lines = [_DISSENT_RULE if self.am_available else _DISSENT_NO_AM]
+        if self.urgent:
+            lines.append("Scout flagged URGENT in its latest log entry — address it in "
+                         f"the plan: {self.urgent}")
         gaps = [g for g in self.gaps() if not g.startswith(AM_UNAVAILABLE)]
         if gaps:
             lines.append("Helper gaps this wake — name them in Watch: " + "; ".join(gaps))
@@ -160,6 +173,8 @@ class FanoutResult:
         parts = []
         if text is not None and "dissent" not in text.lower():
             parts.append(self.dissent_line())
+        if self.urgent:
+            parts.append(f"⚠ Scout URGENT: {self.urgent}")
         if self.rail:
             parts.append(f"⚠ {_rail_text(self.rail)} — remaining helpers stubbed")
         gaps = self.gaps()
@@ -171,7 +186,7 @@ class FanoutResult:
         return {"kind": self.kind, "gw": self.gw, "mode": self.mode,
                 "rail": self.rail[0] if self.rail else None,
                 "cost_usd": round(self.cost_usd, 6),
-                "am_available": self.am_available,
+                "am_available": self.am_available, "urgent": bool(self.urgent),
                 "helpers": {r.role: r.status for r in self.results}}
 
 
@@ -269,17 +284,28 @@ class Fanout:
         self._settle(res)
         return r
 
-    # --- the two wakes --------------------------------------------------------------
+    def _flag_urgent(self, gw, res):
+        """Read the Scout log head (#57): an URGENT line there becomes
+        `res.urgent` (gaffer instructions + Telegram footer) and one
+        `scout_urgent` event. A log check, never a run."""
+        res.urgent = urgent_line(latest_scout_entry(self.reports_dir, gw))
+        if res.urgent:
+            self.logger.event("scout_urgent", gw=gw, kind=res.kind, line=res.urgent)
+        return res.urgent
+
+    # --- the three wakes ------------------------------------------------------------
 
     def run_draft(self, gw, internal_plan, now=None):
-        """analysts → internal plan → AM. `internal_plan()` is the gaffer's own
-        generation (returns the reply text); its errors raise out."""
+        """Scout log check (the daily timer owns the runs, #57) → analysts →
+        internal plan → AM. `internal_plan()` is the gaffer's own generation
+        (returns the reply text); its errors raise out."""
         res = FanoutResult("draft", gw)
         rails = WakeRails(self.llm, self.helpers.wake_rails, clock=self.clock)
         res.mode = self._mode()
         self.logger.event("fanout_start", kind="draft", gw=gw, mode=res.mode,
                           ledger=(self.ledger.snapshot(self.clock())
                                   if self.ledger is not None else None))
+        self._flag_urgent(gw, res)
         for role in ANALYSTS:
             self._step(role, gw, res, rails)
 
@@ -313,5 +339,23 @@ class Fanout:
         summary = plan_summary(plan) if plan else "(no draft plan on record)"
         self._step("scout", gw, res, rails,
                    task=_SCOUT_DELTA_TASK.format(gw=gw, plan=summary))
+        self._flag_urgent(gw, res)
+        self.logger.event("fanout_done", **res.summary())
+        return res
+
+    def run_daily_scout(self, gw, plan, now=None):
+        """The #57 timer's wake: one Scout sweep against the current plan (dict
+        or None), appended newest-first to the GW's Scout log; same rails,
+        ledger gating and stub-on-failure as any helper step. The spend is
+        settled into the ledger here (there is no gaffer call to follow)."""
+        res = FanoutResult("scout", gw)
+        rails = WakeRails(self.llm, self.helpers.wake_rails, clock=self.clock)
+        res.mode = self._mode()
+        self.logger.event("fanout_start", kind="scout", gw=gw, mode=res.mode)
+        date = (now or self.clock()).strftime("%Y-%m-%d")
+        summary = plan_summary(plan) if plan else _NO_PLAN
+        self._step("scout", gw, res, rails,
+                   task=_SCOUT_DAILY_TASK.format(gw=gw, date=date, plan=summary))
+        self._flag_urgent(gw, res)
         self.logger.event("fanout_done", **res.summary())
         return res
