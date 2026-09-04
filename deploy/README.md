@@ -69,8 +69,9 @@ sudo systemctl enable --now fpl-gaffer-review.timer
 
 Add `github-token` and `fpl-cookie` credentials the same way (step 4) when the
 auto-PR flow (#11 §4) and actuator (#13/#14) are provisioned; the daemon simply
-has no such credential until then. The **5th credential, `odds-api-key`** (#54),
-is optional the same way — only the fixtures/odds helper's fetch of
+has no such credential until then. The **5th credential, `odds-api-key`** (#54;
+provisioned on the Pi 2026-09-04, loaded by `fpl-gaffer-brief.service`) is
+optional the same way — only the fixtures/odds helper's fetch of
 `api.the-odds-api.com` uses it, and without it that one fetch degrades to an
 error text the helper reports as a coverage gap:
 
@@ -116,10 +117,10 @@ sudo systemd-run --uid=gaffer --gid=gaffer --wait --pipe --collect \
   /usr/bin/python3 -m daemon propose "Chips analyst" --role /tmp/chips.md --evidence "manual scope check"
 ```
 
-Then add `LoadCredentialEncrypted=odds-api-key:/etc/credstore.encrypted/odds-api-key`
-to the units that run helpers once #56 wires the fan-out into the brief wake
-(a `LoadCredentialEncrypted` line for a file that does not exist fails the unit,
-so the line is not in the shipped units until the key is provisioned).
+`fpl-gaffer-brief.service` carries the `odds-api-key` load line (the unit that
+will run the #56 fan-out); the Scout timer (#57) gets it too. A
+`LoadCredentialEncrypted` line for a file that does not exist fails the unit, so
+provision the key before installing a unit that names it.
 
 ## Verify supervision (acceptance criteria)
 
