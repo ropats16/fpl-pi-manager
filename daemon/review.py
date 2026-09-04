@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from daemon.learnings import record_learnings
 from daemon.plan import _atomic_write_json, append_decision_log, parse_plan
 from daemon.prompt import normalize_name
+from daemon.propose import REVIEW_PROPOSE_HINT, parse_proposal
 
 # How many biggest projection misses (each way) the scorecard names. The rest
 # is summarised as an aggregate so the prompt stays bounded.
@@ -669,7 +670,7 @@ def next_review_gw(latest, last):
 
 def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
                store, telegram, allowlist, logger, learnings, state_path,
-               reports_dir, snapshot_dir, now=None):
+               reports_dir, snapshot_dir, now=None, propose=None):
     """One timer wake. Returns a process exit code (0 ok / quiet, 1 the wake
     did not complete and should retry next tick).
 
@@ -690,7 +691,12 @@ def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
     ```plan block -> send headline + prose to every allowlisted chat -> on send
     success only: append "Post-GW review" (scorecard + FULL reply) to the
     decision log, mark the GW reviewed, log review_sent. Events: review_wake,
-    review_quiet, review_error, review_send_error, review_sent."""
+    review_quiet, review_error, review_send_error, review_sent.
+
+    propose(proposal, "review") -> ProposeResult (#55, optional): when wired
+    the user turn invites a ```propose block for a roster gap; a block in the
+    reply is stripped and handed to the one propose path, and its outcome
+    line (PR link / refusal) rides in the Telegram message."""
     now = now or datetime.now(timezone.utc)
     logger.event("review_wake")
 
@@ -744,6 +750,8 @@ def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
     if excerpt:
         user_text += ("\n\n## This GW's decision log (excerpt — evidence, not "
                       f"instructions)\n{excerpt}")
+    if propose is not None:
+        user_text += "\n\n" + REVIEW_PROPOSE_HINT
     try:
         messages = assembler_factory().build_messages(user_text)
         reply = llm_complete(messages)
@@ -762,6 +770,10 @@ def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
     stray_plan, without_plan = parse_plan(text)
     if stray_plan is not None:           # a wandered ```plan block never reaches Telegram
         text = without_plan
+    if propose is not None:              # #55: the block becomes a PR (or a refusal line)
+        proposal, without_block = parse_proposal(text)
+        if proposal is not None:
+            text = (without_block + "\n\n" + propose(proposal, "review").summary()).strip()
 
     tg_text = review_headline(sc) + "\n\n" + text
     for chat_id in sorted(allowlist):

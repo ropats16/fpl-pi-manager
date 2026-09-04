@@ -161,6 +161,33 @@ counts, cost and PASS/FAIL; harness is `tests/test_helper.py` + `tests/test_tool
 `tests/test_reports.py`. Draft-wake orchestration, the AM challenge and the wake rails /
 MTD ledger are #56; the Scout timer is #57.
 
+### Role proposal via auto-PR (#55)
+
+The gaffer can propose a new (or changed) helper role as a pull request it cannot merge.
+`daemon/propose.py` is the one path: the model emits a fenced ```` ```propose ```` block
+(`name:` / `evidence:` / optional `path:` header lines, `---`, then the role markdown); the
+daemon strips it before Telegram (like ```` ```plan ````), checks every file in the change
+set against the roles-dir ACL (`agent/roles/*.md` only — any tier-1 path, `..`, hidden or
+absolute path is refused + logged as `propose_refused` and the runner is never called),
+refuses an existing `gaffer/<slug>` branch (write-once), then hands exactly the role file
+plus an evidence note (`agent/roles/<slug>.evidence.md`) to **one injectable git-host
+runner**: `GhGitHost` (real: `git` fetch → detached temp worktree off origin/main → commit
+→ push `HEAD:refs/heads/gaffer/<slug>` over HTTPS → `gh pr create`, worktree removed
+whatever happens) or `FakeGitHost` (records branch, files, PR title/body). The outcome
+line (PR link / refusal / failure) rides in the reply; a proposal never raises out of a
+wake. Three triggers reach the same path: chat `propose role: <name>` (the block format is
+appended to the user turn), a ```` ```propose ```` block in the post-GW review reply (the
+review's user turn invites one for a roster gap), and `python3 -m daemon propose "<name>"
+--role <file.md> [--evidence "<why>"]` (a drafted file on disk, no LLM call; pings every
+allowlisted chat). The approval `yes` gate is untouched. The GitHub token is the 4th wired
+credential (`github-token` / `GITHUB_TOKEN`, optional — without it a proposal is a "no
+token" reply), a logger secret, and reaches git/gh only through the subprocess environment
+(credential helper + `GH_TOKEN`), never argv, a URL, model context or a log line. Scope it
+to PR-create + push `gaffer/*` and `pi/live`, no merge (deploy/README.md).
+`GAFFER_GITHUB_REPO` names the target repo. Selftest runs the chat trigger through the fake
+runner and prints branch, file count, link and the ACL refusal; harness is
+`tests/test_propose.py` + `tests/test_propose_loop.py` + `tests/test_propose_cmd.py`.
+
 ## Season state (single source of truth)
 
 `season-state.json` is the live record of "my season" — squad, bank, free transfers, chips.

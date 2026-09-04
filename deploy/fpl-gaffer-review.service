@@ -17,6 +17,7 @@ ExecStart=/usr/bin/python3 -m daemon review
 
 # The review thinks (it writes the retrospective prose + learnings block), so
 # like the brief it loads BOTH the Telegram token and the OpenRouter key.
+# Add github-token here once provisioned so a review can propose a role (#55).
 LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
 LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key
 

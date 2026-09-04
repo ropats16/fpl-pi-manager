@@ -78,6 +78,39 @@ error text the helper reports as a coverage gap:
 printf '%s' 'PASTE_ODDS_API_KEY' | sudo systemd-creds encrypt --name=odds-api-key - /etc/credstore.encrypted/odds-api-key
 ```
 
+The **`github-token` credential (#55 auto-PR)** is optional the same way: without it a
+`propose role: …` request answers "no GitHub token configured". Use a fine-grained PAT on
+`ropats16/fpl-pi-manager` with *Contents: read/write* and *Pull requests: read/write* only
+(no merge — the daemon never merges; branch protection on `main` keeps a poisoned gaffer to
+"open a PR Rohit rejects"). The daemon pushes only `refs/heads/gaffer/<slug>` (and the same
+token backs the `pi/live` backup push when that is wired). `gh` must be on the Pi
+(`sudo apt install gh`); the token reaches `git`/`gh` through the subprocess environment
+only (`GH_TOKEN` + a credential helper), never a URL or argv.
+
+```sh
+sudo apt install -y gh
+printf '%s' 'PASTE_GITHUB_PAT' | sudo systemd-creds encrypt --name=github-token - /etc/credstore.encrypted/github-token
+```
+
+Then add the load line to the units that can propose (the resident daemon for chat, the
+review timer for review-emitted proposals) — only once the credential file exists, else the
+unit fails to start:
+
+```
+LoadCredentialEncrypted=github-token:/etc/credstore.encrypted/github-token
+```
+
+Verify from the Pi with a drafted role file (opens a real PR; delete the branch after):
+
+```sh
+sudo systemd-run --uid=gaffer --gid=gaffer --wait --pipe --collect \
+  -p WorkingDirectory=/opt/fpl-gaffer -p EnvironmentFile=/etc/fpl-gaffer/gaffer.env \
+  -p LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token \
+  -p LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key \
+  -p LoadCredentialEncrypted=github-token:/etc/credstore.encrypted/github-token \
+  /usr/bin/python3 -m daemon propose "Chips analyst" --role /tmp/chips.md --evidence "manual scope check"
+```
+
 Then add `LoadCredentialEncrypted=odds-api-key:/etc/credstore.encrypted/odds-api-key`
 to the units that run helpers once #56 wires the fan-out into the brief wake
 (a `LoadCredentialEncrypted` line for a file that does not exist fails the unit,

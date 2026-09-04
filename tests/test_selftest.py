@@ -57,6 +57,10 @@ class SelftestTest(unittest.TestCase):
         self.assertIn("cost=$0.0", text)
         self.assertIn("one-request=True off-allowlist-refused=True", text)
         self.assertIn("helper=PASS", text)
+        # #55: the propose demo — branch, two files, link in the reply, ACL.
+        self.assertIn("propose: branch=gaffer/chips-analyst files=2", text)
+        self.assertIn("tier1-refused=True", text)
+        self.assertIn("propose=PASS", text)
         self.assertIn('"event": "fetch_refused"', text)
 
     def test_selftest_helper_report_never_lands_in_the_repo(self):

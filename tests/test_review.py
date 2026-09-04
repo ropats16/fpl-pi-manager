@@ -19,6 +19,7 @@ from datetime import datetime
 
 from daemon.logging_setup import StructuredLogger
 from daemon.learnings import LearningsLog
+from daemon.propose import FakeGitHost, make_proposer
 from daemon.review import (ReviewStore, build_scorecard, decision_log_excerpt,
                            latest_finished_gw, load_gw_projections,
                            next_review_gw, render_scorecard, review_headline,
@@ -586,7 +587,7 @@ class RunReviewHarness(unittest.TestCase):
                 "players": players_index()}
 
     def _run(self, events=EVENTS_GW3, fetch_actuals=None, replies=(REPLY,),
-            telegram=None, learnings="diary", events_fn=None):
+            telegram=None, learnings="diary", events_fn=None, propose=None):
         telegram = _Recorder() if telegram is None else telegram
         pending = list(replies)
         self.llm_calls = []
@@ -608,7 +609,7 @@ class RunReviewHarness(unittest.TestCase):
             store=self.store, telegram=telegram, allowlist={42},
             logger=self.logger, learnings=lrn, state_path=self.state_path,
             reports_dir=self.reports_dir, snapshot_dir=self.snapshot_dir,
-            now=_dt("2026-09-01T10:00:00Z"))
+            now=_dt("2026-09-01T10:00:00Z"), propose=propose)
         return rc, telegram
 
     def kinds(self):
@@ -727,6 +728,31 @@ class RunReviewHarness(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertNotIn("```", tg.sent[0]["text"])
         self.assertNotIn("plan", tg.sent[0]["text"].split("\n\n", 1)[1])
+
+    def test_review_emitted_proposal_reaches_the_propose_path(self):
+        # #55: the review's user turn invites a ```propose block; a block in the
+        # reply is stripped, the fake runner records the branch, the link rides
+        # in the Telegram text, and the repo record keeps the full reply.
+        host = FakeGitHost()
+        reply = ("Quick review.\n\n```propose\nname: Chips analyst\n"
+                 "evidence: three drafts with no chip owner\n---\n# Chips analyst\n"
+                 "Own chip timing.\n```")
+        rc, tg = self._run(replies=(reply,), learnings=None,
+                           propose=make_proposer(host, self.logger))
+        self.assertEqual(rc, 0)
+        self.assertIn("```propose", self.llm_calls[0][-1]["content"])
+        (pr,) = host.proposals
+        self.assertEqual(pr["branch"], "gaffer/chips-analyst")
+        self.assertIn("trigger: review", pr["files"]["agent/roles/chips-analyst.evidence.md"])
+        self.assertNotIn("```", tg.sent[0]["text"])
+        self.assertIn("https://github.com/x/y/pull/1", tg.sent[0]["text"])
+        self.assertIn("propose_opened", self.kinds())
+        with open(os.path.join(self.reports_dir, "gw03", "decision-log.md")) as f:
+            self.assertIn("```propose", f.read())
+
+    def test_review_without_a_proposer_gets_no_hint(self):
+        self._run(learnings=None)
+        self.assertNotIn("propose", self.llm_calls[0][-1]["content"])
 
     # --- failure paths -------------------------------------------------------
 

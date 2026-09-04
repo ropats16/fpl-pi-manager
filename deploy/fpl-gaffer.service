@@ -17,7 +17,7 @@ RestartSec=5
 StartLimitIntervalSec=0
 
 # Secrets: decrypted into a service-private tmpfs $CREDENTIALS_DIRECTORY, never
-# env, never the workspace disk. Add github-token / fpl-cookie as provisioned. (#10 §3)
+# env, never the workspace disk. Add github-token (#55 propose) / fpl-cookie as provisioned. (#10 §3)
 LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
 LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key
 

@@ -97,6 +97,19 @@ class HelperSettingsTest(unittest.TestCase):
         self.assertEqual(load_config(env=_env(ODDS_API_KEY="env-odds")).odds_api_key,
                          "env-odds")
 
+    def test_github_token_is_an_optional_credential_and_a_secret(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "github-token"), "w") as f:
+                f.write("ghp_FILE\n")
+            cfg = load_config(env=_env(CREDENTIALS_DIRECTORY=d, GITHUB_TOKEN="ghp_env"))
+        self.assertEqual(cfg.github_token, "ghp_FILE")
+        self.assertIn("ghp_FILE", cfg.secrets())
+        self.assertEqual(load_config(env=_env(GITHUB_TOKEN="ghp_env")).github_token, "ghp_env")
+        cfg = load_config(env=_env())
+        self.assertIsNone(cfg.github_token)                 # unprovisioned Pi still boots
+        self.assertEqual(cfg.github_repo, "ropats16/fpl-pi-manager")
+        self.assertEqual(load_config(env=_env(GAFFER_GITHUB_REPO="o/r")).github_repo, "o/r")
+
     def test_per_role_model_override_is_a_config_change(self):
         h = load_helper_settings({"GAFFER_HELPER_MODEL_MARKET": "x/other",
                                   "GAFFER_HELPER_MODEL": "x/cheap"})
