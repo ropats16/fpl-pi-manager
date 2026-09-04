@@ -195,6 +195,33 @@ class DraftFlowTest(BriefHarness):
         self.assertEqual(self.actuator.applied, [])           # gate: no actuator
         self.assertIn("brief_draft_sent", self.kinds())
 
+    def test_draft_syncs_the_season_state_first_and_warns_when_that_fails(self):
+        # The stale-squad guard: sync(gw) runs before the draft's LLM call; a
+        # failed sync is a daemon-written warning on the draft, never a lost wake.
+        order = []
+        pending = [_brief_with_block(_plan())]
+
+        def llm_complete(messages):
+            order.append("llm")
+            return pending.pop(0)
+
+        def sync(gw):
+            order.append(("sync", gw))
+            return {"status": "error", "from_gw": 1, "to_gw": gw,
+                    "reason": "OSError: fpl down"}
+        tg = _Recorder()
+        rc = run_brief(fetch=lambda: EVENTS, llm_complete=llm_complete,
+                       assembler_factory=_Assembler, store=self.store,
+                       telegram=tg, allowlist={42}, logger=self.logger,
+                       actuator=self.actuator, state_path=self.state_path,
+                       reports_dir=self.reports_dir, now=_dt("2026-08-28T12:00:00Z"),
+                       sync=sync)
+        self.assertEqual(rc, 0)
+        self.assertEqual(order[:2], [("sync", 2), "llm"])
+        self.assertIn("⚠ season state still at GW1 — sync failed: OSError: fpl down",
+                      tg.sent[0]["text"])
+        self.assertTrue(ApprovalStore(self.approval_path).load().draft_sent)
+
     def test_missing_plan_block_retries_once_then_succeeds(self):
         good = _brief_with_block(_plan())
         rc, tg = self.run_at("2026-08-28T12:00:00Z",

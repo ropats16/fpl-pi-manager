@@ -1,8 +1,8 @@
 """Draft/final fan-out orchestration (#56) — the #51 ② roster made real.
 
-DRAFT wake: the four analysts run one after another in the #9 stepwise order
-(availability → fixtures/odds → quality/style → market — each sees the Scout
-log and the reports before it), the gaffer forms its internal plan, the
+DRAFT wake: the five analysts run one after another in the #9 stepwise order
+(availability → fixtures/odds → quality/style → market → chips — each sees the
+Scout log and the reports before it), the gaffer forms its internal plan, the
 assistant-manager (a third model family, #51 ①) challenges that plan with no
 tools, and the gaffer then writes the draft with the AM's single counter in the
 Dissent slot. FINAL wake: one Scout *delta* pass ("what changed since the
@@ -34,7 +34,7 @@ from daemon.plan import append_decision_log, parse_plan, plan_summary
 from daemon.reports import (ReportRefused, ReportWriter, latest_scout_entry,
                             strip_header, urgent_line)
 
-ANALYSTS = ("availability", "fixtures", "quality", "market")
+ANALYSTS = ("availability", "fixtures", "quality", "market", "chips")
 AM_UNAVAILABLE = "AM unavailable"
 RAIL_ORDER = ("cost_usd", "calls", "tokens", "minutes")
 

@@ -29,12 +29,13 @@ ROLE_FILES = {
     "fixtures": "analyst-fixtures.md",
     "quality": "analyst-quality.md",
     "market": "analyst-market.md",
+    "chips": "analyst-chips.md",
     "scout": "scout.md",
     "am": "assistant-manager.md",
 }
 REPORT_CAP_TOKENS = {"availability": 700, "fixtures": 700, "quality": 700,
-                     "market": 700, "am": 500, "scout": 250}
-SCOUT_LOG_TAIL_TOKENS = 1000
+                     "market": 700, "chips": 700, "am": 500, "scout": 400}
+SCOUT_LOG_TAIL_TOKENS = 1500
 PRIOR_REPORT_TOKENS = 700
 # Per assistant turn. Reasoning models (glm-5.3-flash thinks before it writes)
 # spend hidden reasoning tokens out of this budget: the first live run hit a

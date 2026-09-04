@@ -44,7 +44,7 @@ python3 -m daemon                              # run the daemon (needs config �
 ### Workspace + prompt assembly (#16)
 
 The gaffer's persona and know-how live as markdown under `agent/` — `GAFFER.md`
-(persona + standing orders), `roles/*.md` (Scout, four analysts, AM), `playbooks/*.md`
+(persona + standing orders), `roles/*.md` (Scout, five analysts, AM), `playbooks/*.md`
 (per-task how-tos), `memory/MEMORY.md` (capped learnings index) — read fresh each
 wake so a pull applies next message. `daemon/prompt.py` assembles the system prompt
 lean index-then-fetch: persona + memory index + report index + today's playbook +
@@ -123,7 +123,7 @@ season-state `entry_id` else the season-state squad. Harness is `tests/test_revi
 ### Helper tool loop (#54)
 
 The first slice of the #52 fan-out: `python3 -m daemon helper <role> [--gw N]` runs one
-helper role (`availability`, `fixtures`, `quality`, `market`, `scout`, `am`) as a **bounded
+helper role (`availability`, `fixtures`, `quality`, `market`, `chips`, `scout`, `am`) as a **bounded
 tool loop** on the model mapped for it (#51: analysts/Scout `z-ai/glm-5.3-flash`, AM
 `qwen/qwen3.8-max`, gaffer unchanged; `GAFFER_HELPER_MODEL`, `GAFFER_AM_MODEL` or a per-role
 `GAFFER_HELPER_MODEL_<ROLE>` override) and writes one source-stamped report into
@@ -147,7 +147,7 @@ they never reach the gaffer's prompt except through the capped, headed report.
 path: one file per role per GW, **write-once** (second write refused + logged), body capped
 at write time (analyst ~700 tok, AM ~500), header = role/model/timings/fetch+search
 counts/coverage/status, and any path outside the GW folder refused. Per-helper ceilings
-(25 fetch / 10 search / 40 turns incl. the write-up / 15 min; `GAFFER_HELPER_MAX_*`) are
+(25 fetch / 15 search / 40 turns incl. the write-up / 15 min; `GAFFER_HELPER_MAX_*`) are
 tier-1 config: on a hit
 the loop injects one write-up instruction, the report carries `coverage incomplete: …` and a
 `cap_hit` event is logged. A helper LLM failure writes a stub (`helper failed: <reason>,
@@ -163,9 +163,9 @@ MTD ledger are #56 (below); the daily Scout timer is #57 (below).
 
 ### Draft/final fan-out, AM challenge, wake rails, MTD ledger (#56)
 
-`daemon/fanout.py` makes the brief wake (#18) fan out per #51 ②. **Draft tick:** the four
-analysts run one after another in the #9 order (availability → fixtures → quality → market,
-each seeing the Scout log and the reports before it), the gaffer forms an **internal plan**
+`daemon/fanout.py` makes the brief wake (#18) fan out per #51 ②. **Draft tick:** the five
+analysts run one after another in the #9 order (availability → fixtures → quality → market
+→ chips, each seeing the Scout log and the reports before it), the gaffer forms an **internal plan**
 (a Sol call through the normal assembler, logged to the decision log as "Internal plan
 (pre-AM)", never sent), the **AM** runs on `qwen/qwen3.8-max` with **no tools** and the plan
 as its task, its report is logged as "AM challenge", and the gaffer then writes the draft
@@ -196,7 +196,7 @@ the brief's existing retry-then-alert path, and a retried draft keeps every repo
 written (`helper_skipped cause=exists`, nothing re-bought). The Scout's writer path is now
 the append-only `scout-log.md` (newest first, per-entry cap, flock'd read-modify-write so the daily Scout and a final delta cannot clobber each other; the seam the #57 daily timer drives). `run_brief(...,
 fanout=None)` keeps the single-call brief for the protocol tests. Selftest runs one draft
-wake offline (four flash analysts, Sol plan, Qwen AM, Sol draft) and prints reports
+wake offline (five flash analysts, Sol plan, Qwen AM, Sol draft) and prints reports
 written, call order, prompt tokens, cost, rail/ledger status and PASS/FAIL; harness is
 `tests/test_fanout.py` + `tests/test_ledger.py`.
 
@@ -207,7 +207,7 @@ written, call order, prompt tokens, cost, rail/ledger status and PASS/FAIL; harn
 seam #56 left. It runs the Scout helper (`z-ai/glm-5.3-flash`, same tool loop + per-helper
 ceilings, fetch + search) for the **next unfinished GW** (falls back to season-state
 `current_gw` if the events fetch fails; `--gw` overrides) and **appends** one dated entry to
-`agent/reports/gwNN/scout-log.md` — newest first, per-entry ~250-token cap, never overwrites
+`agent/reports/gwNN/scout-log.md` — newest first, per-entry ~400-token cap, never overwrites
 (a second run the same day appends again; the GW folder is created if absent). The task text
 carries the current pending/approved plan summary (from `data/approval-state.json`, when it is
 for that GW) so the Scout can judge plan-voiding news; anything that could void the plan is
@@ -280,6 +280,21 @@ the live source of truth. Your **entry id is never committed**: it is read from 
 element ids → names/clubs/prices via the bootstrap, and loads them (with the real bank and
 captain/vice) — the one-step way to replace a placeholder squad with your actual team. Pick
 ids become the real FPL element ids; `--gw` defaults to the state's current gameweek.
+
+**Auto-sync (daemon, 2026-09-04).** Nobody runs `pull-squad`/`advance-gw` by hand any more:
+`daemon/sync.py` `SeasonSync.ensure(N)` rolls the state to gameweek N on its own — squad =
+the 15 fielded in N-1 (public picks endpoint, bank from `entry_history`), `free_transfers`
+replayed from `/entry/{id}/history/` (1 after GW1, then `min(5, max(ft − used, 0) + 1)`;
+a wildcard/free-hit GW freezes the count), `current_gw = N`, `active_chip = none`, an
+`auto-sync` history entry; no-op (`season_sync status=current`) when already at/past N. Two
+callers: the post-GW review wake right after a GW is graded (`sync(settled + 1)`) and the
+brief wake before every draft (`sync(deadline gw)`, the stale-squad guard — a failed sync is a
+`⚠ season state still at GWx — sync failed: …` line on the draft, `sync_error` event, never a
+lost wake). `python3 -m daemon sync [--gw N]` is the hand-crank (exit 1 on error). Needs an
+entry id (`FPL_ENTRY_ID` / state `entry_id`; none → `skipped`). `bought_for` = current price
+(the picks endpoint has no purchase price), so selling prices can be a touch off. Why: after
+GW2 the roll was a manual TODO that never ran, and every brief until GW3 was drafted from the
+GW1 squad. Harness `tests/test_sync.py` + the seam tests in test_brief/test_review.
 
 ## Agent skills
 

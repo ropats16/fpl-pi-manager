@@ -60,10 +60,10 @@ class HelperSettingsTest(unittest.TestCase):
     def test_defaults_match_the_51_decisions(self):
         cfg = load_config(env=_env())
         h = cfg.helpers
-        for role in ("availability", "fixtures", "quality", "market", "scout"):
+        for role in ("availability", "fixtures", "quality", "market", "chips", "scout"):
             self.assertEqual(h.models[role], HELPER_MODEL)
         self.assertEqual(h.models["am"], AM_MODEL)
-        self.assertEqual(h.caps, {"fetches": 25, "searches": 10, "turns": 40,
+        self.assertEqual(h.caps, {"fetches": 25, "searches": 15, "turns": 40,
                                   "minutes": 15})
         for dom in ("fantasy.premierleague.com", "fantasyfootballscout.co.uk",
                     "understat.com", "football-data.co.uk", "api.the-odds-api.com"):
@@ -121,7 +121,7 @@ class HelperSettingsTest(unittest.TestCase):
         h = load_helper_settings({"GAFFER_HELPER_MAX_TURNS": "0",
                                   "GAFFER_HELPER_MAX_FETCHES": "-3",
                                   "GAFFER_HELPER_MAX_SEARCHES": "ten"})
-        self.assertEqual(h.caps, {"fetches": 25, "searches": 10, "turns": 40, "minutes": 15})
+        self.assertEqual(h.caps, {"fetches": 25, "searches": 15, "turns": 40, "minutes": 15})
 
     def test_bad_price_table_json_falls_back_to_defaults(self):
         h = load_helper_settings({"GAFFER_PRICE_TABLE": "{nope"})

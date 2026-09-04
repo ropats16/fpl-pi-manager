@@ -670,9 +670,10 @@ def next_review_gw(latest, last):
 
 def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
                store, telegram, allowlist, logger, learnings, state_path,
-               reports_dir, snapshot_dir, now=None, propose=None):
+               reports_dir, snapshot_dir, now=None, propose=None, sync=None):
     """One timer wake. Returns a process exit code (0 ok / quiet, 1 the wake
-    did not complete and should retry next tick).
+    did not complete and should retry next tick). `sync(gw)` (SeasonSync.ensure)
+    rolls the season state to the settled GW + 1 the moment a GW is graded.
 
     fetch_events()          -> distilled bootstrap events.
     fetch_actuals(gw)       -> {"live": <distill_live()>, "picks": <raw picks
@@ -739,6 +740,13 @@ def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
     else:
         picks = _state_picks(state)
         picks_source = "state"
+
+    # A settled GW is the cue to roll the season state to the next one (squad
+    # as fielded, FT, bank). After this wake's own state read — the fallback
+    # picks above must be the settled GW's squad, not the rolled one — and
+    # before the LLM, so a failed review still leaves the state current.
+    if sync is not None:
+        sync(gw + 1)
 
     projections = load_gw_projections(snapshot_path(snapshot_dir, gw))
     sc = build_scorecard(gw, actuals.get("live") or {}, picks,

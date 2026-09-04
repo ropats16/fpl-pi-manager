@@ -157,6 +157,7 @@ _REPORT_BODIES = {
     "fixtures": "FIX-BODY the fixture run and congestion",
     "quality": "QUAL-BODY underlying xG / xA numbers",
     "market": "MKT-BODY overnight price moves",
+    "chips": "CHIPS-BODY the chip-timing windows",
     "am": "AM-BODY the assistant-manager's read",
 }
 
@@ -363,15 +364,17 @@ class HelperReportsSectionTest(unittest.TestCase):
             .assemble_system_prompt("how's my team looking?")
         self.assertIn(self.TITLE, prompt)
         for marker in ("AVAIL-BODY", "FIX-BODY", "QUAL-BODY", "MKT-BODY",
-                       "AM-BODY", "SCOUT-HEAD"):
+                       "CHIPS-BODY", "AM-BODY", "SCOUT-HEAD"):
             self.assertIn(marker, prompt)
         for sub in ("### availability", "### fixtures", "### quality",
-                    "### market", "### am", "### scout log (latest)"):
+                    "### market", "### chips", "### am", "### scout log (latest)"):
             self.assertIn(sub, prompt)
         # header stripped: the read_reports strip means no `role:` frontmatter leaks
         self.assertNotIn("role: availability", prompt)
-        # fixed order: analysts, then AM, then the scout log
-        self.assertLess(prompt.index("AVAIL-BODY"), prompt.index("AM-BODY"))
+        # fixed order: analysts (chips 5th), then AM, then the scout log
+        self.assertLess(prompt.index("AVAIL-BODY"), prompt.index("MKT-BODY"))
+        self.assertLess(prompt.index("MKT-BODY"), prompt.index("CHIPS-BODY"))
+        self.assertLess(prompt.index("CHIPS-BODY"), prompt.index("AM-BODY"))
         self.assertLess(prompt.index("AM-BODY"), prompt.index("SCOUT-HEAD"))
         # placement: after the playbook, before the learnings / reports index
         self.assertLess(prompt.index("## Playbook"), prompt.index(self.TITLE))
@@ -428,7 +431,7 @@ class HelperReportsSectionTest(unittest.TestCase):
             return marker + " " + ("word " * ((tokens * 7 // 2) // 5))
 
         for role, tok in (("availability", 700), ("fixtures", 700), ("quality", 700),
-                          ("market", 700), ("am", 500)):
+                          ("market", 700), ("chips", 700), ("am", 500)):
             with open(os.path.join(folder, f"{role}.md"), "w") as f:
                 f.write(f"---\nrole: {role}\n---\n{body(role.upper() + '-CAP', tok)}\n")
         with open(os.path.join(folder, "scout-log.md"), "w") as f:

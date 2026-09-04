@@ -221,10 +221,10 @@ journalctl -u fpl-gaffer-review -n 20             # review_wake / review_quiet /
 ## Helper tool loop (#54)
 
 `python3 -m daemon helper <role> [--gw N]` runs one helper role (`availability`,
-`fixtures`, `quality`, `market`, `scout`, `am`) as a bounded tool loop on its mapped
+`fixtures`, `quality`, `market`, `chips`, `scout`, `am`) as a bounded tool loop on its mapped
 model and writes `agent/reports/gwNN/<role>.md` for the next FPL deadline's GW
 (write-once — delete the file to re-run; the Scout appends to `scout-log.md`
-instead). The draft wake runs the four analysts + the AM itself (#56, below); the
+instead). The draft wake runs the five analysts + the AM itself (#56, below); the
 daily Scout timer wakes the Scout on its own (#57, [below](#daily-scout-timer-57)).
 To run one by hand on the Pi with the daemon's config and credentials:
 
@@ -247,16 +247,36 @@ Ceilings and the model map are `gaffer.env` overrides (`GAFFER_HELPER_MAX_*`,
 Nothing new to install: `fpl-gaffer-brief.service` already loads the three
 credentials the fan-out needs (telegram, openrouter, odds), and the ledger lives
 under `data/` (inside `ReadWritePaths`). On a draft tick the brief now runs
-availability → fixtures → quality → market → internal plan → AM → draft (~25–40 min
+availability → fixtures → quality → market → chips → internal plan → AM → draft (~25–40 min
 on the Pi, every step an `llm_call` event with cost; `fanout_start` / `fanout_done`
 bracket it, `rail_hit` / `helper_skipped` name any circuit breaker), and on the
 final tick one Scout delta. Reports: `agent/reports/gwNN/{availability,fixtures,
-quality,market,am}.md` + `scout-log.md` + `decision-log.md` (internal plan, AM
+quality,market,chips,am}.md` + `scout-log.md` + `decision-log.md` (internal plan, AM
 challenge, draft). Spend: `data/spend-ledger.json` — check it with
 `sudo -n -u gaffer cat /opt/fpl-gaffer/data/spend-ledger.json`; at $4 MTD helpers
 lose search, at $4.75 they are skipped (gaffer + AM still run). Rails and
 thresholds are `gaffer.env` overrides (`GAFFER_WAKE_MAX_*`, `GAFFER_LEDGER_*`).
 To rerun a draft's helpers by hand, delete the report files first (write-once).
+
+## Season-state auto-sync
+
+`season-state.json` on the Pi rolls forward on its own: the review wake syncs it
+to `settled GW + 1` the moment a gameweek is graded, and every draft wake checks
+it is at the deadline's GW before drafting (squad as actually fielded, bank, free
+transfers replayed from the entry history). Journal: `season_sync` (`status=`
+`current|synced|skipped|error`) / `sync_error`; a failed sync shows on the draft
+as `⚠ season state still at GWx — sync failed: …`. Needs `FPL_ENTRY_ID` in
+`/etc/fpl-gaffer/gaffer.env` (it is). By hand:
+
+```sh
+sudo -u gaffer env FPL_ENTRY_ID=<id> python3 -m daemon sync          # next unfinished GW
+sudo -u gaffer env FPL_ENTRY_ID=<id> python3 -m daemon sync --gw 5
+```
+
+Hazard (open): the file is git-tracked but Pi-written, so `git status` on the Pi
+is permanently dirty for it (and for `agent/memory/learnings.md`); a commit on
+main that touches either file will make the Pi's pull refuse. Do not edit them on
+main.
 
 ## Daily Scout timer (#57)
 
@@ -264,7 +284,7 @@ To rerun a draft's helpers by hand, delete the report files first (write-once).
 UTC (= 10:00 IST)** — after the overnight FPL price changes settle (~01:30 UTC).
 Each wake runs the Scout helper (`z-ai/glm-5.3-flash`, fetch + search, the same
 per-helper ceilings as any helper) for the next unfinished GW and **appends** one
-dated entry to `agent/reports/gwNN/scout-log.md` (newest first, ~250-token cap,
+dated entry to `agent/reports/gwNN/scout-log.md` (newest first, ~400-token cap,
 never overwrites — a second run the same day appends again; the GW folder is made
 if absent). The task carries the current pending/approved plan summary (from
 `data/approval-state.json`, when it is for that GW) so the Scout can judge

@@ -25,7 +25,7 @@ DEFAULT_SYSTEM_PROMPT = (
 # --- #51 role->model map -----------------------------------------------------------
 HELPER_MODEL = "z-ai/glm-5.3-flash"      # analysts + Scout (+ the search sub-call)
 AM_MODEL = "qwen/qwen3.8-max"            # assistant-manager: a third model family
-HELPER_ROLES = ("availability", "fixtures", "quality", "market", "scout", "am")
+HELPER_ROLES = ("availability", "fixtures", "quality", "market", "chips", "scout", "am")
 
 # --- #51 seed fetch allowlist (bare domains; subdomains match) -----------------------
 DEFAULT_FETCH_ALLOWLIST = frozenset({
@@ -37,7 +37,7 @@ DEFAULT_FETCH_ALLOWLIST = frozenset({
 })
 
 # --- #51 per-helper ceilings: circuit breakers ~3x above a thorough run --------------
-DEFAULT_HELPER_CAPS = {"fetches": 25, "searches": 10, "turns": 40, "minutes": 15}
+DEFAULT_HELPER_CAPS = {"fetches": 25, "searches": 15, "turns": 40, "minutes": 15}
 
 # --- price table, USD per 1M tokens (openrouter.ai/models, verified 2026-09-03) -----
 DEFAULT_PRICES = {

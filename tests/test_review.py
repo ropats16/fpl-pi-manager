@@ -587,7 +587,8 @@ class RunReviewHarness(unittest.TestCase):
                 "players": players_index()}
 
     def _run(self, events=EVENTS_GW3, fetch_actuals=None, replies=(REPLY,),
-            telegram=None, learnings="diary", events_fn=None, propose=None):
+            telegram=None, learnings="diary", events_fn=None, propose=None,
+            sync=None):
         telegram = _Recorder() if telegram is None else telegram
         pending = list(replies)
         self.llm_calls = []
@@ -609,7 +610,7 @@ class RunReviewHarness(unittest.TestCase):
             store=self.store, telegram=telegram, allowlist={42},
             logger=self.logger, learnings=lrn, state_path=self.state_path,
             reports_dir=self.reports_dir, snapshot_dir=self.snapshot_dir,
-            now=_dt("2026-09-01T10:00:00Z"), propose=propose)
+            now=_dt("2026-09-01T10:00:00Z"), propose=propose, sync=sync)
         return rc, telegram
 
     def kinds(self):
@@ -621,6 +622,18 @@ class RunReviewHarness(unittest.TestCase):
             if e["event"] == name:
                 return e
         return None
+
+    def test_a_settled_gw_rolls_the_season_state_to_the_next_one(self):
+        # The auto-sync seam: grading GW N is the cue for sync(N + 1), before
+        # the review's own state read and whatever the LLM does after.
+        targets = []
+        rc, _ = self._run(sync=lambda gw: targets.append(gw) or {"status": "synced"})
+        self.assertEqual(rc, 0)
+        self.assertEqual(targets, [4])
+        targets.clear()
+        self._run(events=[dict(e, finished=False, data_checked=False) for e in EVENTS_GW3],
+                  sync=lambda gw: targets.append(gw))
+        self.assertEqual(targets, [])                 # quiet wake: no sync
 
     def test_missed_gameweeks_are_reviewed_in_order_one_per_tick(self):
         self.store.mark(1)
