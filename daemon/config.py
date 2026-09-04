@@ -47,6 +47,7 @@ DEFAULT_PRICES = {
 }
 # OpenRouter web plugin, engine Exa: $0.007/request incl. 10 results.
 DEFAULT_SEARCH_COST_USD = 0.007
+DEFAULT_GITHUB_REPO = "ropats16/fpl-pi-manager"   # #55 auto-PR target (owner/name)
 
 
 class HelperSettings:
@@ -128,10 +129,12 @@ def load_helper_settings(env=None):
 
 class Config:
     __slots__ = ("allowlist", "telegram_token", "openrouter_key", "model",
-                 "base_url", "system_prompt", "odds_api_key", "helpers")
+                 "base_url", "system_prompt", "odds_api_key", "helpers",
+                 "github_token", "github_repo")
 
     def __init__(self, allowlist, telegram_token, openrouter_key, model,
-                 base_url, system_prompt, odds_api_key=None, helpers=None):
+                 base_url, system_prompt, odds_api_key=None, helpers=None,
+                 github_token=None, github_repo=DEFAULT_GITHUB_REPO):
         self.allowlist = allowlist
         self.telegram_token = telegram_token
         self.openrouter_key = openrouter_key
@@ -140,10 +143,13 @@ class Config:
         self.system_prompt = system_prompt
         self.odds_api_key = odds_api_key
         self.helpers = helpers if helpers is not None else default_helper_settings()
+        self.github_token = github_token
+        self.github_repo = github_repo
 
     def secrets(self):
         """Values that must never appear in logs (fed to StructuredLogger)."""
-        return [self.telegram_token, self.openrouter_key, self.odds_api_key]
+        return [self.telegram_token, self.openrouter_key, self.odds_api_key,
+                self.github_token]
 
 
 def _parse_allowlist(env):
@@ -187,6 +193,9 @@ def load_config(env=None):
     # The 5th secret (#51/#54): optional — only the fixtures/odds fetch needs it,
     # and a missing key degrades that one fetch to an error text, never the wake.
     odds_api_key = _read_credential(env, "odds-api-key", "ODDS_API_KEY") or None
+    # The GitHub token (#55 auto-PR; "4th secret" in the #11 numbering): optional
+    # — without it a role proposal degrades to a "no token" reply, never a crash.
+    github_token = _read_credential(env, "github-token", "GITHUB_TOKEN") or None
 
     missing = [n for n, v in (("allowlist", allowlist),
                               ("telegram token", telegram_token),
@@ -203,4 +212,6 @@ def load_config(env=None):
         system_prompt=env.get("GAFFER_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
         odds_api_key=odds_api_key,
         helpers=load_helper_settings(env),
+        github_token=github_token,
+        github_repo=env.get("GAFFER_GITHUB_REPO", DEFAULT_GITHUB_REPO),
     )

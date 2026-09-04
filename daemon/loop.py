@@ -22,10 +22,12 @@ from daemon.learnings import record_learnings
 from daemon.prompt import select_playbook
 from daemon.plan import (append_decision_log, is_approval, is_stop, parse_plan,
                          plan_summary)
+from daemon.propose import (NO_TOKEN_REPLY, PROPOSE_HINT, is_propose_request,
+                            parse_proposal, requested_name)
 
 
 def process_message(msg, cfg, telegram, llm, logger, assembler=None,
-                    approvals=None, learnings=None):
+                    approvals=None, learnings=None, proposer=None):
     """Handle one incoming Telegram message. Returns True if a reply was sent.
 
     When an `assembler` is wired, the system prompt is assembled fresh from the
@@ -36,7 +38,10 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
     recorded, and the block stripped, before anything else touches the text
     (#20). The other diary writer is the #21 review WAKE (daemon.review), never
     a chat reply — a chat "how did I do?" has no code-computed scorecard to
-    ground a lesson on."""
+    ground a lesson on. When a `proposer` is wired (#55), a `propose role: X`
+    request carries the block format into the user turn, and any reply's
+    ```propose block is stripped and handed to the one propose path — the
+    result line (PR link / refusal) rides in the reply."""
     if msg.from_id not in cfg.allowlist:
         # Silent drop, no reply — replying confirms a live bot to a stranger.
         logger.event("drop", reason="not_allowlisted",
@@ -71,10 +76,18 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
             return True
 
     # --- debate / iterate / chat -> the model ---------------------------------
+    # --- role proposal request (#55) — only on Rohit's explicit ask ----------
+    asked = is_propose_request(msg.text)
+    if asked and proposer is None:
+        # No GitHub token on this box: say so, spend nothing.
+        logger.event("propose_refused", reason="no github token", text=msg.text)
+        telegram.send_message(msg.chat_id, NO_TOKEN_REPLY)
+        return True
+    user_text = msg.text + "\n\n" + PROPOSE_HINT if asked else msg.text
     messages = None
     if assembler is not None:
         try:
-            messages = assembler.build_messages(msg.text)
+            messages = assembler.build_messages(user_text)
         except Exception as e:
             # A broken workspace/state must not mute the bot — fall back to the
             # static prompt so the wake still gets a reply, and log why.
@@ -83,7 +96,7 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
     if messages is None:
         messages = [
             {"role": "system", "content": cfg.system_prompt},
-            {"role": "user", "content": msg.text},
+            {"role": "user", "content": user_text},
         ]
     reply = llm.complete(messages)
 
@@ -120,6 +133,22 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
                     logger.event("decision_log_error", gw=st.gw,
                                  error=type(e).__name__, detail=str(e))
 
+    # A role proposal (#55): the block never reaches Telegram; the outcome
+    # line does. Honoured only on Rohit's `propose role: <name>` — the request
+    # names the role, the model drafts it — and an unasked-for block in plain
+    # chat is stripped and logged, never a PR. The path itself never raises.
+    if proposer is not None:
+        proposal, without = parse_proposal(send_text)
+        if proposal is not None and asked:
+            wanted = requested_name(msg.text)
+            if wanted:
+                proposal = proposal.renamed(wanted)
+            send_text = (without + "\n\n" + proposer(proposal, "chat").summary()).strip()
+        elif proposal is not None:
+            logger.event("propose_ignored", reason="not requested", name=proposal.name)
+            send_text = (without + "\n\n⛔ Unrequested role proposal dropped — ask "
+                         "`propose role: <name>` to open one.").strip()
+
     logger.event("reply", from_id=msg.from_id, chat_id=msg.chat_id,
                  prompt=msg.text, reply=send_text)
     telegram.send_message(msg.chat_id, send_text)
@@ -127,12 +156,13 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
 
 
 def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None,
-              learnings=None):
+              learnings=None, proposer=None):
     """One long-poll cycle. Returns the next offset to request."""
     for msg in telegram.get_updates(offset):
         try:
             process_message(msg, cfg, telegram, llm, logger, assembler=assembler,
-                            approvals=approvals, learnings=learnings)
+                            approvals=approvals, learnings=learnings,
+                            proposer=proposer)
         except Exception as e:  # one bad message must not kill the daemon
             logger.event("error", from_id=getattr(msg, "from_id", None),
                          error=type(e).__name__, detail=str(e))
@@ -141,7 +171,7 @@ def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None
 
 
 def run(cfg, telegram, llm, logger, should_continue=lambda: True, idle_sleep=1.0,
-        assembler=None, approvals=None, learnings=None):
+        assembler=None, approvals=None, learnings=None, proposer=None):
     """Resident loop: long-poll Telegram forever, waking on each message."""
     offset = 0
     logger.event("startup", model=cfg.model, allowlist_size=len(cfg.allowlist))
@@ -149,7 +179,7 @@ def run(cfg, telegram, llm, logger, should_continue=lambda: True, idle_sleep=1.0
         try:
             offset = poll_once(cfg, telegram, llm, logger, offset,
                                assembler=assembler, approvals=approvals,
-                               learnings=learnings)
+                               learnings=learnings, proposer=proposer)
         except Exception as e:  # network blip — log and keep cycling
             logger.event("poll_error", error=type(e).__name__, detail=str(e))
             time.sleep(idle_sleep)

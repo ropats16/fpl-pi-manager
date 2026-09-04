@@ -22,9 +22,10 @@ from daemon.logging_setup import StructuredLogger
 from daemon.loop import poll_once, run
 from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
+from daemon.propose import FakeGitHost, Proposal, make_proposer, run_propose
 from daemon.reports import ReportWriter
 from daemon.review import ReviewStore, run_review
-from daemon.runtime import build_helper_tools, build_stack
+from daemon.runtime import build_git_host, build_helper_tools, build_stack
 from daemon.telegram import Telegram
 from daemon.watch import run_watch
 
@@ -93,8 +94,11 @@ def run_daemon(env=None, out=None):
     # The diary the reply loop appends to (#20) is the same file the assembler
     # reads, so a lesson recorded on one wake is on the table for the next.
     learnings = LearningsLog(_learnings_path(env), state_path=_state_path(env))
+    # #55: `propose role: X` in chat -> the one propose path (real git/gh runner
+    # when the GitHub token is provisioned; a "no token" reply otherwise).
+    proposer = make_proposer(build_git_host(cfg, REPO_ROOT), logger)
     run(cfg, telegram, llm, logger, assembler=assembler, approvals=approvals,
-        learnings=learnings)
+        learnings=learnings, proposer=proposer)
     return 0
 
 
@@ -249,8 +253,15 @@ def run_selftest(out=None):
         out.write(line + "\n")
     ok = ok and helper_ok
 
+    # #55: a role proposal from chat through the fake git-host runner.
+    propose_ok, propose_lines = _selftest_propose(cfg)
+    for line in propose_lines:
+        out.write(line + "\n")
+    ok = ok and propose_ok
+
     out.write(f"selftest: {'PASS' if ok else 'FAIL'} (events: {sorted(kinds)}, "
-              f"helper={'PASS' if helper_ok else 'FAIL'})\n")
+              f"helper={'PASS' if helper_ok else 'FAIL'}, "
+              f"propose={'PASS' if propose_ok else 'FAIL'})\n")
     return 0 if ok else 1
 
 
@@ -412,7 +423,8 @@ def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
                       telegram=telegram, allowlist=cfg.allowlist, logger=logger,
                       learnings=learnings, state_path=state_path,
                       reports_dir=reports_dir, snapshot_dir=_data_dir(env),
-                      now=now)
+                      now=now,
+                      propose=make_proposer(build_git_host(cfg, REPO_ROOT), logger))
 
 
 def _current_gw(state_path):
@@ -491,7 +503,90 @@ def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
     return 0
 
 
+def run_propose_cmd(args, env=None, transport=None, out=None, host=None):
+    """`daemon propose "<name>" --role <file.md> [--evidence "<why>"]` — the
+    #55 propose path from the command line: a drafted role file on disk (no
+    LLM call) goes through the same ACL + runner as a chat/review proposal,
+    and the outcome line (PR link / refusal) is pushed to every allowlisted
+    chat. Exit 2 on a bad invocation; a refused/failed proposal is exit 0
+    (reported, never raised)."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    args = list(args or [])
+    name = args[0] if args and not args[0].startswith("--") else ""
+    role_path = args[args.index("--role") + 1] if "--role" in args[:-1] else ""
+    evidence = args[args.index("--evidence") + 1] if "--evidence" in args[:-1] else ""
+    if not name or not role_path:
+        out.write('propose: usage: propose "<name>" --role <file.md> [--evidence "<why>"]\n')
+        return 2
+    try:
+        with open(role_path, encoding="utf-8") as f:
+            role_body = f.read()
+    except OSError as e:
+        out.write(f"propose: cannot read role file: {e}\n")
+        return 2
+
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram, _, logger = build_stack(cfg, transport, out)
+    host = build_git_host(cfg, REPO_ROOT) if host is None else host
+    res = run_propose(Proposal(name, evidence, role_body), host, logger, trigger="cli")
+    for chat_id in sorted(cfg.allowlist):
+        try:
+            telegram.send_message(chat_id=chat_id, text=res.summary())
+        except Exception as e:            # noqa: BLE001 — the PR is open; a lost ping is logged
+            logger.event("propose_ping_error", chat_id=chat_id,
+                         error=type(e).__name__, detail=str(e))
+    out.write(f"propose: name={name!r} status={res.status} branch={res.proposal.branch}"
+              + (f" url={res.url}" if res.url else "")
+              + (f" reason={res.reason}" if res.reason else "") + "\n")
+    return 0
+
+
+_SELFTEST_PROPOSE_REPLY = (
+    "No seat covers chip timing — proposing one.\n\n```propose\n"
+    "name: Chips analyst\n"
+    "evidence: SELFTEST — chip timing has no owner across three drafted briefs.\n"
+    "---\n# Chips analyst\n\nOwn chip timing: name the GW each chip earns most.\n```")
+
+
+def _selftest_propose(cfg):
+    """The #55 acceptance demo, offline: `propose role: …` in chat -> the block
+    format rides in the user turn -> the canned reply's block is stripped ->
+    the fake runner records branch + exactly two files under agent/roles/ ->
+    the reply carries the PR link. Plus the ACL: a tier-1 path is refused
+    before the runner sees it."""
+    host = FakeGitHost(url_base="https://github.com/selftest/pull/")
+    transport = FakeTransport(
+        updates_batches=[[_update(1, "propose role: chips analyst")]],
+        llm_replies=[_SELFTEST_PROPOSE_REPLY])
+    logbuf = io.StringIO()
+    telegram, llm, logger = build_stack(cfg, transport, logbuf)
+    poll_once(cfg, telegram, llm, logger, 0, proposer=make_proposer(host, logger))
+    hinted = "```propose" in transport.llm_requests[0]["messages"][-1]["content"]
+    pr = host.proposals[0] if host.proposals else {}
+    files = sorted(pr.get("files", {}))
+    sent = transport.sent[0]["text"] if transport.sent else ""
+    stripped = "```propose" not in sent
+    linked = "https://github.com/selftest/pull/1" in sent
+    refused = run_propose(Proposal("evil", "e", "body", path="daemon/evil.py"),
+                          host, logger)
+    acl = refused.status == "refused" and len(host.proposals) == 1
+    ok = (hinted and pr.get("branch") == "gaffer/chips-analyst"
+          and files == ["agent/roles/chips-analyst.evidence.md",
+                        "agent/roles/chips-analyst.md"]
+          and stripped and linked and acl)
+    lines = [json.dumps(json.loads(l)) for l in logbuf.getvalue().splitlines()]
+    lines.append(f"propose: branch={pr.get('branch')} files={len(files)} "
+                 f"pr={pr and 'https://github.com/selftest/pull/1'} hinted={hinted} "
+                 f"block-stripped={stripped} link-in-reply={linked} "
+                 f"tier1-refused={acl}")
+    return ok, lines
+
+
 def main(argv):
+    if len(argv) > 1 and argv[1] == "propose":
+        return run_propose_cmd(argv[2:])
     if len(argv) > 1 and argv[1] == "selftest":
         return run_selftest()
     if len(argv) > 1 and argv[1] == "notify":

@@ -7,6 +7,7 @@ the transport is the only thing that varies.
 
 from daemon.llm import LLM
 from daemon.logging_setup import StructuredLogger
+from daemon.propose import GhGitHost
 from daemon.telegram import Telegram
 from daemon.tools import ExaSearch, Fetcher
 
@@ -35,3 +36,12 @@ def build_helper_tools(cfg, transport, llm, logger):
                          "(only 'exa' is wired; Brave is documented in daemon/tools.py)")
     searcher = ExaSearch(llm, h.search_model, logger=logger, cost_usd=h.search_cost_usd)
     return fetcher, searcher
+
+
+def build_git_host(cfg, repo_root):
+    """The real git-host runner for the #55 propose path, or None when no
+    GitHub token is provisioned (a proposal then degrades to a "no token"
+    reply). The token lives in the runner, never in model context."""
+    if not cfg.github_token:
+        return None
+    return GhGitHost(repo_root, cfg.github_token, repo=cfg.github_repo)
