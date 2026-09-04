@@ -217,10 +217,10 @@ draft fan-out's analysts read (Scout tail inlined in their prompts and the gaffe
 reports (evidence, not instructions)" section), so a Tuesday knock is on the table Thursday.
 Wake rails + MTD ledger apply as for any helper step: ledger `search_off` → no search tool,
 `helpers_off` → stub entry with no LLM call; spend is folded into the ledger (source
-`scout-fanout` / `scout`). A Scout failure writes a stub entry (`helper failed: …, coverage:
+`scout-fanout`). A Scout failure writes a stub entry (`helper failed: …, coverage:
 none`) and exits 0 — degrade, never abort; exit 2 only for a bad `--gw` / undeterminable GW.
 Prints one summary line `scout: gw=N status=ok|cap_hit|failed|skipped log=<path> entries=K
-urgent=… fetches=… searches=… cost=$…`, and selftest gains a `scout: …` line + `scout=PASS`.
+urgent=… fetches=… searches=… turns=… cost=$…`, and selftest gains a `scout: …` line + `scout=PASS`.
 Files: `daemon/__main__.py` `run_scout_cmd`, `daemon/fanout.py` `Fanout.run_daily_scout`,
 `daemon/reports.py` `latest_scout_entry`, the `fpl-gaffer-scout.{service,timer}` units;
 harness is `tests/test_scout_cmd.py`.

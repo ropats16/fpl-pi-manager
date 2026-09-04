@@ -25,7 +25,7 @@ from daemon.loop import poll_once, run
 from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
 from daemon.propose import FakeGitHost, Proposal, make_proposer, run_propose
-from daemon.reports import ReportWriter, read_scout_log
+from daemon.reports import ReportWriter, read_scout_log, scout_entries
 from daemon.review import ReviewStore, run_review
 from daemon.runtime import build_git_host, build_helper_tools, build_stack
 from daemon.telegram import Telegram
@@ -548,10 +548,10 @@ def run_scout_cmd(args, env=None, transport=None, out=None, fetch_events=None,
         return 2
 
     fanout = build_fanout(cfg, env, transport, llm, logger, clock=clock)
+    # The step settles its own spend into the ledger (no gaffer call follows).
     res = fanout.run_daily_scout(gw, _current_plan(env, gw), now=now)
-    fanout.settle("scout")
     r = res.results[0]
-    entries = read_scout_log(_reports_dir(env), gw).count("\n### ")
+    entries = len(scout_entries(read_scout_log(_reports_dir(env), gw)))
     out.write(f"scout: gw={gw} status={r.status} log={r.path} entries={entries} "
               f"urgent={bool(res.urgent)} fetches={r.fetches} searches={r.searches} "
               f"turns={r.turns} cost=${res.cost_usd:.5f}"
@@ -807,7 +807,7 @@ def _selftest_scout(cfg):
     if os.path.exists(log_path):
         with open(log_path, encoding="utf-8") as f:
             log = f.read()
-    entries = log.count("\n### ")
+    entries = len(scout_entries(log))
     newest_first = ("URGENT" in log and "Morning sweep" in log
                     and log.index("URGENT") < log.index("Morning sweep"))
     raw = logbuf.getvalue().splitlines()

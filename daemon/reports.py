@@ -17,6 +17,7 @@ lands with the Scout timer (#57) on this same writer.
 
 import fcntl
 import os
+import re
 
 from daemon.config import HELPER_ROLES
 from daemon.prompt import char_budget, estimate_tokens
@@ -64,16 +65,21 @@ def read_scout_log(reports_dir, gw):
         return f.read().strip()
 
 
+# One Scout entry starts with the stamp line _append_scout writes — never a
+# `### ` heading the model put inside its own body.
+_ENTRY_RE = re.compile(r"^### \S+ — scout \(", re.MULTILINE)
+
+
+def scout_entries(text):
+    """The entries of a Scout log, newest first (stamp line + body each)."""
+    starts = [m.start() for m in _ENTRY_RE.finditer(text or "")]
+    return [text[a:b].strip() for a, b in zip(starts, starts[1:] + [len(text)])]
+
+
 def latest_scout_entry(reports_dir, gw):
-    """The newest entry of the GW's Scout log (its `### …` line + body), ""
-    if the log has none. Entries are newest-first, so it is the first
-    `### ` block (#57)."""
-    text = read_scout_log(reports_dir, gw)
-    start = text.find("### ")
-    if start == -1 or (start > 0 and text[start - 1] != "\n"):
-        return ""
-    end = text.find("\n### ", start)
-    return (text[start:] if end == -1 else text[start:end]).strip()
+    """The newest entry of the GW's Scout log, "" if it has none (#57)."""
+    entries = scout_entries(read_scout_log(reports_dir, gw))
+    return entries[0] if entries else ""
 
 
 def urgent_line(entry):
@@ -209,8 +215,8 @@ class ReportWriter:
                 rest = existing                               # keep a foreign top line
             text = top + "\n" + entry + rest
             out = self._atomic_write(path, text)
-        entries = text.count("\n### ") + text.startswith("### ")
-        self._log("report_appended", role="scout", path=out, entries=entries)
+        self._log("report_appended", role="scout", path=out,
+                  entries=len(scout_entries(text)))
         return out
 
     def stub(self, role, reason, header):
