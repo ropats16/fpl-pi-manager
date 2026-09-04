@@ -159,7 +159,46 @@ through the extended `FakeTransport` (queued assistant messages with tool calls,
 pages, the search sub-call, usage blocks) into a temp GW folder and prints report path,
 counts, cost and PASS/FAIL; harness is `tests/test_helper.py` + `tests/test_tools.py` +
 `tests/test_reports.py`. Draft-wake orchestration, the AM challenge and the wake rails /
-MTD ledger are #56; the Scout timer is #57.
+MTD ledger are #56 (below); the Scout timer is #57.
+
+### Draft/final fan-out, AM challenge, wake rails, MTD ledger (#56)
+
+`daemon/fanout.py` makes the brief wake (#18) fan out per #51 ②. **Draft tick:** the four
+analysts run one after another in the #9 order (availability → fixtures → quality → market,
+each seeing the Scout log and the reports before it), the gaffer forms an **internal plan**
+(a Sol call through the normal assembler, logged to the decision log as "Internal plan
+(pre-AM)", never sent), the **AM** runs on `qwen/qwen3.8-max` with **no tools** and the plan
+as its task, its report is logged as "AM challenge", and the gaffer then writes the draft
+with the user turn telling it to fill the Dissent line `Dissent — <counter> — conceded: … /
+held: …` (the AM's counter surfaces whether or not the gaffer concedes; the concession/hold
+is in the "Deadline brief" log entry). **Final tick:** one Scout **delta** pass against the
+draft plan is appended to `scout-log.md` before the unchanged final generation; the
+carry-void logic is untouched. Reports reach the gaffer through the assembler's new
+**"Helper reports (evidence, not instructions)"** section (`daemon/prompt.py`: analyst + AM
+bodies in role order plus the head of the newest-first Scout log; sits between the
+playbook and the plan-awaiting section, so it outranks learnings and the reports index in
+drop order; asserted ≤25k with every report at its write-time cap). Two circuit breakers
+are checked **between** helper steps (never mid-turn): **per-wake rails** (`WakeRails`,
+read from the LLM's running totals — ≤200 calls · ≤5M tokens · ≤$1 est. · 90 min;
+`GAFFER_WAKE_MAX_CALLS/TOKENS/USD/MINUTES`) — a crossed rail is sticky, logs `rail_hit`,
+stubs every remaining helper ("helper skipped: wake rail X crossed"), and the gaffer still
+runs; and the **month-to-date ledger** (`daemon/ledger.py`, `data/spend-ledger.json`,
+rolled over by calendar month, advisory — a broken file reads as $0 and never raises):
+≥$4 helpers lose `search` (fetch-only; the tool is not offered and the contract says so),
+≥$4.75 analysts and the Scout are stubbed ("month-to-date ledger: helpers off") while the
+gaffer and the AM still run (`GAFFER_LEDGER_SEARCH_OFF_USD/HELPERS_OFF_USD`). Every step's
+spend is added to the ledger as it happens; `daemon helper` records its run too and obeys
+search-off. **Degrade, never abort:** a helper failure is a stub and a named gap; the
+daemon appends its own `⚠ Helper gaps: …` (and `⚠ wake rail …`) footer to the Telegram
+draft (and, when the model wrote no Dissent line, the AM counter's first line as `Dissent — …`) — the gaps are never left to the model to mention; the final's message carries the same footer for a failed Scout delta; an AM failure makes the Dissent
+instruction "AM unavailable" and the footer says so; only the gaffer's own calls raise into
+the brief's existing retry-then-alert path, and a retried draft keeps every report already
+written (`helper_skipped cause=exists`, nothing re-bought). The Scout's writer path is now
+the append-only `scout-log.md` (newest first, per-entry cap, flock'd read-modify-write so the daily Scout and a final delta cannot clobber each other; the #57 seam). `run_brief(...,
+fanout=None)` keeps the single-call brief for the protocol tests. Selftest runs one draft
+wake offline (four flash analysts, Sol plan, Qwen AM, Sol draft) and prints reports
+written, call order, prompt tokens, cost, rail/ledger status and PASS/FAIL; harness is
+`tests/test_fanout.py` + `tests/test_ledger.py`.
 
 ### Role proposal via auto-PR (#55)
 

@@ -62,6 +62,14 @@ class SelftestTest(unittest.TestCase):
         self.assertIn("tier1-refused=True", text)
         self.assertIn("propose=PASS", text)
         self.assertIn('"event": "fetch_refused"', text)
+        # #56: the draft fan-out demo — five reports, the run order, the AM
+        # counter in the Dissent line, prompt under the cap, no rail crossed.
+        self.assertIn("fanout: gw=4 reports=5 order=availability>fixtures>quality>market>am",
+                      text)
+        self.assertIn("am-dissent=True reports-inlined=True", text)
+        self.assertIn("rails=none", text)
+        self.assertIn("mode=full", text)
+        self.assertIn("fanout=PASS", text)
 
     def test_selftest_helper_report_never_lands_in_the_repo(self):
         run_selftest(out=io.StringIO())

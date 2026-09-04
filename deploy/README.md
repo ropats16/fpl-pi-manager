@@ -219,9 +219,10 @@ journalctl -u fpl-gaffer-review -n 20             # review_wake / review_quiet /
 `python3 -m daemon helper <role> [--gw N]` runs one helper role (`availability`,
 `fixtures`, `quality`, `market`, `scout`, `am`) as a bounded tool loop on its mapped
 model and writes `agent/reports/gwNN/<role>.md` for the next FPL deadline's GW
-(write-once — delete the file to re-run). No timer yet (#56/#57 wire it into the
-draft wake and the daily Scout); to run one by hand on the Pi with the daemon's
-config and credentials:
+(write-once — delete the file to re-run; the Scout appends to `scout-log.md`
+instead). The draft wake runs the four analysts + the AM itself (#56, below); the
+daily Scout timer is #57. To run one by hand on the Pi with the daemon's config
+and credentials:
 
 ```sh
 sudo systemd-run --uid=gaffer --gid=gaffer --pipe --wait --collect \
@@ -236,6 +237,22 @@ sudo systemd-run --uid=gaffer --gid=gaffer --pipe --wait --collect \
 Ceilings and the model map are `gaffer.env` overrides (`GAFFER_HELPER_MAX_*`,
 `GAFFER_HELPER_MODEL`, `GAFFER_AM_MODEL`, `GAFFER_FETCH_ALLOWLIST`,
 `GAFFER_PRICE_TABLE`) — see `gaffer.env.example`; defaults are the #51 decisions.
+
+## Draft fan-out, wake rails, MTD ledger (#56)
+
+Nothing new to install: `fpl-gaffer-brief.service` already loads the three
+credentials the fan-out needs (telegram, openrouter, odds), and the ledger lives
+under `data/` (inside `ReadWritePaths`). On a draft tick the brief now runs
+availability → fixtures → quality → market → internal plan → AM → draft (~25–40 min
+on the Pi, every step an `llm_call` event with cost; `fanout_start` / `fanout_done`
+bracket it, `rail_hit` / `helper_skipped` name any circuit breaker), and on the
+final tick one Scout delta. Reports: `agent/reports/gwNN/{availability,fixtures,
+quality,market,am}.md` + `scout-log.md` + `decision-log.md` (internal plan, AM
+challenge, draft). Spend: `data/spend-ledger.json` — check it with
+`sudo -n -u gaffer cat /opt/fpl-gaffer/data/spend-ledger.json`; at $4 MTD helpers
+lose search, at $4.75 they are skipped (gaffer + AM still run). Rails and
+thresholds are `gaffer.env` overrides (`GAFFER_WAKE_MAX_*`, `GAFFER_LEDGER_*`).
+To rerun a draft's helpers by hand, delete the report files first (write-once).
 
 ## Applying updates (self-test-gated auto-reload)
 

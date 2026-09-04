@@ -10,7 +10,7 @@ By now the analysts and the AM have reported. You've formed the plan. Write it a
 2. **ASK** — transfer(s) in→out, hit cost (−0 / −4), resulting XI delta, **(C)** and **(VC)**. This is the concrete action a `yes` approves.
 3. **WHY** — 1–3 lines. The core reasoning, no padding.
 4. **Confidence** — LOW / MED / HIGH.
-5. **Dissent** — the AM's single strongest counter, or "AM: no material objection."
+5. **Dissent** — the AM's single strongest counter and how you resolved it: `Dissent — <counter> — conceded: <what changed>` or `— held: <why>`; "AM: no material objection" when the AM found none; "AM unavailable" when it did not report. The counter is shown whether or not you concede.
 6. **Watch** — deadline-risk flags to re-verify at the final ping (feeds the carry-void check).
 7. **Contingency** — named "if X ruled out → do Y" fallbacks the daemon may auto-run if Rohit is unreachable at the lock. Cover the captain and any at-risk starter.
 8. **Reply menu** — `yes / why / debate / change X`.

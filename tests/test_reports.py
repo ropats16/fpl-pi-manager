@@ -10,7 +10,8 @@ import unittest
 
 from daemon.logging_setup import StructuredLogger
 from daemon.prompt import estimate_tokens
-from daemon.reports import ReportRefused, ReportWriter, read_reports
+from daemon.reports import (ReportRefused, ReportWriter, read_reports,
+                            read_scout_log)
 
 def _read(path):
     with open(path, encoding="utf-8") as f:
@@ -94,6 +95,79 @@ class ReportWriterTest(unittest.TestCase):
         self.assertEqual(list(got), ["availability"])
         self.assertIn("AVAIL BODY", got["availability"])
         self.assertNotIn("role: availability", got["availability"])   # header stripped
+
+
+SCOUT_HEADER = {"model": "z-ai/glm-5.3-flash", "started": "2026-09-03T10:00:00Z",
+                "finished": "2026-09-03T10:03:00Z", "fetches": 2, "searches": 1,
+                "coverage": "checked FPL flags", "status": "ok"}
+
+
+class ScoutLogTest(unittest.TestCase):
+    """The Scout's append-only log (#57 seam): scout-log.md, newest entry on top,
+    never write-once. Every other role stays write-once (asserted elsewhere)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="scoutlog-")
+        self.logbuf = io.StringIO()
+        self.w = ReportWriter(self.tmp, gw=4, logger=StructuredLogger(stream=self.logbuf),
+                              cap_tokens=250)
+
+    def _events(self):
+        return [json.loads(l) for l in self.logbuf.getvalue().splitlines()]
+
+    def test_path_is_scout_log_and_exists_is_always_false(self):
+        self.assertEqual(self.w.path_for("scout"),
+                         os.path.join(self.tmp, "gw04", "scout-log.md"))
+        self.w.write("scout", "entry one", SCOUT_HEADER)
+        self.assertFalse(self.w.exists("scout"))   # a log is never "already written"
+
+    def test_two_writes_append_newest_first_under_one_header(self):
+        self.w.write("scout", "OLDEST body", dict(SCOUT_HEADER, finished="2026-09-03T10:03:00Z"))
+        self.w.write("scout", "NEWEST body", dict(SCOUT_HEADER, finished="2026-09-04T10:03:00Z"))
+        text = _read(self.w.path_for("scout"))
+        self.assertEqual(text.count("# Scout log — GW04"), 1)
+        self.assertTrue(text.lstrip().startswith("# Scout log — GW04"))
+        self.assertIn("OLDEST body", text)
+        self.assertIn("NEWEST body", text)
+        self.assertLess(text.index("NEWEST body"), text.index("OLDEST body"))
+        self.assertLess(text.index("2026-09-04T10:03:00Z"), text.index("2026-09-03T10:03:00Z"))
+        self.assertIn("scout (z-ai/glm-5.3-flash; fetches 2; searches 1; status ok", text)
+
+    def test_write_logs_report_appended_not_report_written(self):
+        self.w.write("scout", "x", SCOUT_HEADER)
+        events = self._events()
+        self.assertTrue(any(e["event"] == "report_appended" for e in events))
+        self.assertFalse(any(e["event"] == "report_written" for e in events))
+
+    def test_stub_appends_a_failed_entry(self):
+        self.w.stub("scout", "helper failed: TimeoutError: llm timeout", SCOUT_HEADER)
+        text = _read(self.w.path_for("scout"))
+        self.assertIn("status failed", text)
+        self.assertIn("coverage none", text)
+        self.assertIn("helper failed: TimeoutError: llm timeout, coverage: none", text)
+
+    def test_entry_body_is_capped_per_entry(self):
+        self.w.write("scout", "word " * 5000, SCOUT_HEADER)
+        text = _read(self.w.path_for("scout"))
+        self.assertIn("[truncated at write time", text)
+
+    def test_scout_write_outside_the_gw_folder_is_refused(self):
+        self.w.path_for = lambda role: os.path.join(self.tmp, "gw05", "scout-log.md")
+        with self.assertRaises(ReportRefused):
+            self.w.write("scout", "x", SCOUT_HEADER)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "gw05")))
+
+    def test_other_roles_stay_write_once_alongside_the_scout_log(self):
+        self.w.write("availability", "AVAIL", SCOUT_HEADER)
+        with self.assertRaises(ReportRefused):
+            self.w.write("availability", "AVAIL2", SCOUT_HEADER)
+
+    def test_read_scout_log_returns_content_or_empty(self):
+        self.assertEqual(read_scout_log(self.tmp, 4), "")
+        self.w.write("scout", "SCOUT ENTRY", SCOUT_HEADER)
+        got = read_scout_log(self.tmp, 4)
+        self.assertIn("SCOUT ENTRY", got)
+        self.assertIn("# Scout log — GW04", got)
 
 
 if __name__ == "__main__":
