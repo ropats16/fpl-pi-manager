@@ -2,6 +2,9 @@
 Description=FPL Gaffer resident daemon (Telegram long-poll + LLM wake-on-message)
 After=network-online.target
 Wants=network-online.target
+# Never give up on a crash-loop (else a bad deploy is permanent) — a [Unit]
+# setting; under [Service] systemd ignores it. (#11 §5)
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -10,11 +13,9 @@ WorkingDirectory=/opt/fpl-gaffer
 ExecStart=/usr/bin/python3 -m daemon
 
 # Crash-recovery = free: read code fresh each start, keep cycling until the
-# 15-min pull lands a fix. StartLimitIntervalSec=0 stops systemd from ever
-# giving up on a crash-loop (else a bad deploy is permanent). (#11 §5)
+# 15-min pull lands a fix (StartLimitIntervalSec=0 is in [Unit] above). (#11 §5)
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=0
 
 # Secrets: decrypted into a service-private tmpfs $CREDENTIALS_DIRECTORY, never
 # env, never the workspace disk. Add github-token (#55 propose) / fpl-cookie as provisioned. (#10 §3)
