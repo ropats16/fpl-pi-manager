@@ -98,13 +98,9 @@ sudo apt install -y gh
 printf '%s' 'PASTE_GITHUB_PAT' | sudo systemd-creds encrypt --name=github-token - /etc/credstore.encrypted/github-token
 ```
 
-Then add the load line to the units that can propose (the resident daemon for chat, the
-review timer for review-emitted proposals) — only once the credential file exists, else the
-unit fails to start:
-
-```
-LoadCredentialEncrypted=github-token:/etc/credstore.encrypted/github-token
-```
+`fpl-gaffer.service` (chat) and `fpl-gaffer-review.service` (review-emitted proposals)
+carry the `github-token` load line (provisioned 2026-09-04); a load line for a missing
+credential file fails the unit, so provision before installing.
 
 Verify from the Pi with a drafted role file (opens a real PR; delete the branch after):
 

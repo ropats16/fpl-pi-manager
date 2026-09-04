@@ -18,9 +18,11 @@ Restart=always
 RestartSec=5
 
 # Secrets: decrypted into a service-private tmpfs $CREDENTIALS_DIRECTORY, never
-# env, never the workspace disk. Add github-token (#55 propose) / fpl-cookie as provisioned. (#10 §3)
+# env, never the workspace disk. github-token = the #55 propose path (chat
+# `propose role: …`); fpl-cookie still unprovisioned. (#10 §3)
 LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
 LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key
+LoadCredentialEncrypted=github-token:/etc/credstore.encrypted/github-token
 
 # Non-secret config outside every gaffer-writable path (numeric allowlist, model).
 # Root-owned; the '-' tolerates absence during first bootstrap. (#10 §2)
