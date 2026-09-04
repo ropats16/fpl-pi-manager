@@ -167,14 +167,24 @@ def load_helper_settings(env=None):
     return h
 
 
+# The gaffer's per-call output budget. Sol is a reasoning model: hidden
+# reasoning is spent out of this budget before any visible text, and the
+# 1024 the client shipped with left the first six-report draft (2026-09-04)
+# with completion_tokens=1024 and an EMPTY brief — the #54 flash lesson again.
+# 8k at Sol prices is ≤$0.08 a call, worst case.
+DEFAULT_MAX_TOKENS = 8192
+
+
 class Config:
     __slots__ = ("allowlist", "telegram_token", "openrouter_key", "model",
                  "base_url", "system_prompt", "odds_api_key", "helpers",
-                 "github_token", "github_repo")
+                 "github_token", "github_repo", "max_tokens")
 
     def __init__(self, allowlist, telegram_token, openrouter_key, model,
                  base_url, system_prompt, odds_api_key=None, helpers=None,
-                 github_token=None, github_repo=DEFAULT_GITHUB_REPO):
+                 github_token=None, github_repo=DEFAULT_GITHUB_REPO,
+                 max_tokens=DEFAULT_MAX_TOKENS):
+        self.max_tokens = max_tokens
         self.allowlist = allowlist
         self.telegram_token = telegram_token
         self.openrouter_key = openrouter_key
@@ -254,4 +264,5 @@ def load_config(env=None):
         helpers=load_helper_settings(env),
         github_token=github_token,
         github_repo=env.get("GAFFER_GITHUB_REPO", DEFAULT_GITHUB_REPO),
+        max_tokens=_int_env(env, "GAFFER_MAX_TOKENS", DEFAULT_MAX_TOKENS),
     )

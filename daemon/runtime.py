@@ -19,7 +19,8 @@ def build_stack(cfg, transport, out):
     logger = StructuredLogger(stream=out, secrets=cfg.secrets())
     telegram = Telegram(token=cfg.telegram_token, transport=transport)
     llm = LLM(api_key=cfg.openrouter_key, model=cfg.model, transport=transport,
-              base_url=cfg.base_url, logger=logger, prices=cfg.helpers.prices)
+              base_url=cfg.base_url, logger=logger, prices=cfg.helpers.prices,
+              max_tokens=cfg.max_tokens)
     return telegram, llm, logger
 
 

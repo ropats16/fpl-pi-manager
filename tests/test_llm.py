@@ -121,6 +121,7 @@ class UsageAndCostTest(unittest.TestCase):
         self.assertEqual(call["prompt_tokens"], 2000)
         self.assertEqual(call["completion_tokens"], 400)
         self.assertAlmostEqual(call["cost_usd"], 2000 * 0.075e-6 + 400 * 0.25e-6)
+        self.assertIn("finish_reason", call)     # "length" = budget ran out, visible
         # Running totals for the wake rails (#56) and the selftest printout.
         self.assertEqual(llm.calls, 1)
         self.assertAlmostEqual(llm.cost_usd, call["cost_usd"])
