@@ -20,6 +20,7 @@ import json
 import os
 from datetime import datetime, timezone
 
+from daemon.agent import Tool
 from daemon.prompt import char_budget, load_projections, season_snapshot
 from daemon.reports import ReportRefused, read_reports, read_scout_log
 from daemon.tools import FETCH_TOOL, SEARCH_TOOL
@@ -242,8 +243,22 @@ def run_helper(role, llm, model, workspace_root, state_path, gw, fetcher, search
     user_turn = task if task is not None else f"Produce your GW{gw} report now."
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": user_turn}]
+    # The two helper tools as shared `Tool`s (spec §1): one object carries both the
+    # wire schema and the dispatch callable, capped at the per-helper ceiling. The
+    # helper keeps its own ceiling accounting below (per-tool-type caps + a write-up
+    # re-prompt), which the generic `run_agent` loop does not model — so these Tools
+    # are the shared internal, not a `run_agent` call.
+    helper_tools = []
+    if fetch:
+        helper_tools.append(("fetches", "url",
+            Tool.from_schema(FETCH_TOOL, lambda url: fetcher.fetch(url),
+                             cap=caps["fetches"])))
+    if search:
+        helper_tools.append(("searches", "query",
+            Tool.from_schema(SEARCH_TOOL, lambda query: searcher.search(query, role=role),
+                             cap=caps["searches"])))
     # None (not []) so `llm.chat(tools=None)` carries no `tools` key (#56).
-    tools = [t for t, on in ((FETCH_TOOL, fetch), (SEARCH_TOOL, search)) if on] or None
+    tools = [t.schema() for _, _, t in helper_tools] or None
     cap = None
     detail = ""
     report = None
@@ -254,11 +269,7 @@ def run_helper(role, llm, model, workspace_root, state_path, gw, fetcher, search
     # A withheld tool (#56) is off the table entirely and lands in `off` instead:
     # a stray call for it gets a fixed message, never counted, never trips a cap.
     used = {"fetches": 0, "searches": 0}
-    table = {}
-    if fetch:
-        table["fetch"] = ("fetches", "url", lambda a: fetcher.fetch(a))
-    if search:
-        table["search"] = ("searches", "query", lambda a: searcher.search(a, role=role))
+    table = {t.name: (key, arg_name, t.fn) for key, arg_name, t in helper_tools}
     off = {}
     if not fetch:
         off["fetch"] = "fetch is not available to this role."

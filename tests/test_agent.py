@@ -1,0 +1,195 @@
+"""The shared tool-loop core `run_agent` (spec §1), driven through the network
+seam: what the model was offered, which tools ran, and the caps/status the loop
+enforces. Never inspects loop internals beyond the public AgentResult."""
+
+import io
+import json
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from daemon.agent import AgentResult, Caps, Tool, run_agent
+from daemon.llm import LLM
+from daemon.logging_setup import StructuredLogger
+from tests.fakes import FakeTransport, tool_call_message
+
+PRICES = {"z-ai/glm-5.3-flash": {"prompt": 0.075, "completion": 0.25},
+          "moonshotai/kimi-k2.5": {"prompt": 0.6, "completion": 2.5}}
+CAPS = Caps(turns=12, minutes=6, cost_usd=0.40)
+
+
+class _Clock:
+    def __init__(self, step_seconds=0):
+        self.t = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+        self.step = step_seconds
+
+    def __call__(self):
+        self.t += timedelta(seconds=self.step)
+        return self.t
+
+
+class AgentHarness(unittest.TestCase):
+    def setUp(self):
+        self.logbuf = io.StringIO()
+
+    def _llm(self, transport, model="moonshotai/kimi-k2.5"):
+        logger = StructuredLogger(stream=self.logbuf, secrets=[])
+        return LLM(api_key="K", model=model, transport=transport, logger=logger,
+                   prices=PRICES, wake_id="w1"), logger
+
+    def _tool(self, name="lookup", cap=None, fn=None):
+        calls = []
+
+        def default_fn(**kw):
+            calls.append(kw)
+            return f"{name} result"
+        t = Tool(name, f"the {name} tool", {"type": "object",
+                 "properties": {"q": {"type": "string"}}, "required": []},
+                 fn or default_fn, cap=cap)
+        self.recorded_calls = calls      # __slots__ Tool can't hold test state
+        return t
+
+    def _events(self, kind=None):
+        ev = [json.loads(l) for l in self.logbuf.getvalue().splitlines()]
+        return [e for e in ev if kind is None or e["event"] == kind]
+
+
+class NoToolsTest(AgentHarness):
+    def test_no_tools_is_a_single_plain_completion(self):
+        t = FakeTransport(llm_reply="plain answer")
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [], CAPS, logger, role="gaffer")
+        self.assertIsInstance(res, AgentResult)
+        self.assertEqual(res.reply, "plain answer")
+        self.assertEqual(res.turns, 1)
+        self.assertEqual(res.tool_calls, {})
+        self.assertEqual(res.status, "ok")
+        self.assertEqual(len(t.llm_requests), 1)
+        self.assertNotIn("tools", t.llm_requests[0])
+        # role reaches the ledger exactly as llm.complete would log it.
+        self.assertEqual({c["role"] for c in self._events("llm_call")}, {"gaffer"})
+
+    def test_none_tools_behaves_like_empty(self):
+        t = FakeTransport(llm_reply="x")
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        None, CAPS, logger, role="gaffer")
+        self.assertEqual(res.reply, "x")
+        self.assertEqual(len(t.llm_requests), 1)
+
+
+class ToolLoopTest(AgentHarness):
+    def test_one_tool_call_then_a_final_answer(self):
+        tool = self._tool("lookup")
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {"q": "haaland"}, "c1"),
+            "final answer"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [tool], CAPS, logger, role="gaffer")
+        self.assertEqual(res.reply, "final answer")
+        self.assertEqual(res.status, "ok")
+        self.assertEqual(res.turns, 2)
+        self.assertEqual(res.tool_calls, {"lookup": 1})
+        self.assertEqual(self.recorded_calls, [{"q": "haaland"}])
+        # The offered schema is the Tool's own name/description/parameters.
+        self.assertEqual(t.llm_requests[0]["tools"][0]["function"]["name"], "lookup")
+        # The tool result rode back as a tool turn after the echoed assistant msg.
+        msgs = t.llm_requests[-1]["messages"]
+        self.assertEqual([m["role"] for m in msgs][-2:], ["assistant", "tool"])
+        self.assertIn("lookup result", msgs[-1]["content"])
+
+    def test_unknown_tool_gets_error_text_and_the_loop_continues(self):
+        t = FakeTransport(llm_replies=[
+            tool_call_message("rm", {"path": "/"}, "c1"), "recovered"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], CAPS, logger, role="gaffer")
+        self.assertEqual(res.reply, "recovered")
+        tool_msg = [m for m in t.llm_requests[-1]["messages"] if m["role"] == "tool"][0]
+        self.assertIn("unknown tool", tool_msg["content"])
+
+    def test_a_tool_that_raises_is_caught_and_reported(self):
+        def boom(**kw):
+            raise RuntimeError("kaboom")
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {}, "c1"), "after"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup", fn=boom)], CAPS, logger, role="gaffer")
+        self.assertEqual(res.reply, "after")
+        self.assertEqual(res.status, "ok")
+        tool_msg = [m for m in t.llm_requests[-1]["messages"] if m["role"] == "tool"][0]
+        self.assertIn("kaboom", tool_msg["content"])
+
+
+class PerToolCapTest(AgentHarness):
+    def test_over_cap_returns_a_fixed_result_counted_and_never_calls_fn(self):
+        tool = self._tool("lookup", cap=1)
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {"q": "a"}, "c1"),
+            tool_call_message("lookup", {"q": "b"}, "c2"),
+            "done"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [tool], CAPS, logger, role="gaffer")
+        self.assertEqual(res.reply, "done")
+        # fn ran once; the second call is over cap -> fixed result, still counted.
+        self.assertEqual(self.recorded_calls, [{"q": "a"}])
+        self.assertEqual(res.tool_calls, {"lookup": 2})
+        tool_msgs = [m for m in t.llm_requests[-1]["messages"] if m["role"] == "tool"]
+        self.assertIn("cap", tool_msgs[-1]["content"].lower())
+
+
+class CapTest(AgentHarness):
+    def test_turns_cap_stops_the_loop_with_last_text(self):
+        # A tool call every turn: the loop never gets a final answer, so the
+        # turns cap ends it and the last assistant text is the reply.
+        replies = [tool_call_message("lookup", {}, f"c{i}") for i in range(10)]
+        t = FakeTransport(llm_replies=replies)
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], Caps(turns=3, minutes=6, cost_usd=1.0),
+                        logger, role="gaffer")
+        self.assertEqual(res.status, "cap_hit:turns")
+        self.assertEqual(res.turns, 3)
+        self.assertEqual(len(t.llm_requests), 3)
+
+    def test_minutes_cap_stops_before_the_next_call(self):
+        replies = [tool_call_message("lookup", {}, f"c{i}") for i in range(10)]
+        t = FakeTransport(llm_replies=replies)
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], Caps(turns=99, minutes=6, cost_usd=1.0),
+                        logger, role="gaffer", clock=_Clock(step_seconds=4 * 60))
+        self.assertEqual(res.status, "cap_hit:minutes")
+
+    def test_cost_cap_stops_the_loop(self):
+        replies = [tool_call_message("lookup", {}, f"c{i}") for i in range(10)]
+        t = FakeTransport(llm_replies=replies,
+                          usage={"prompt_tokens": 1_000_000, "completion_tokens": 0})
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], Caps(turns=99, minutes=99, cost_usd=1.0),
+                        logger, role="gaffer")
+        self.assertEqual(res.status, "cap_hit:cost")
+        self.assertGreater(res.cost_usd, 0)
+
+
+class ErrorTest(AgentHarness):
+    def test_llm_error_never_raises_and_sets_error_status(self):
+        class Down:
+            requests = []
+
+            def request(self, *a):
+                raise OSError("openrouter down")
+        llm, logger = self._llm(Down())
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], CAPS, logger, role="gaffer")
+        self.assertEqual(res.status, "error")
+        self.assertTrue(res.reply)                       # a fixed line, never blank
+        self.assertEqual(len(self._events("agent_error")), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
