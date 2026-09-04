@@ -651,7 +651,7 @@ def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
 
     h = cfg.helpers
     writer = ReportWriter(_reports_dir(env), gw, logger=logger,
-                          cap_tokens=REPORT_CAP_TOKENS.get(role, 700))
+                          cap_tokens=REPORT_CAP_TOKENS.get(role, 1000))
     if writer.exists(role):
         # Write-once: do not spend a run whose report could not be written.
         logger.event("report_refused", gw=gw, reason="exists", path=writer.path_for(role))
