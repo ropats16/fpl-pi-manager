@@ -374,7 +374,7 @@ class Assembler:
                 with open(scout_path, encoding="utf-8") as f:
                     log = f.read().strip()
                 if log:
-                    head_budget = char_budget(1000)
+                    head_budget = char_budget(1500)     # ~3 entries at the 400 cap
                     head = (log[:head_budget].rstrip() + "…"
                             if len(log) > head_budget else log)
                     blocks.append(f"### scout log (latest)\n{head}")

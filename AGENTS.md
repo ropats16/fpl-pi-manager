@@ -281,6 +281,21 @@ element ids → names/clubs/prices via the bootstrap, and loads them (with the r
 captain/vice) — the one-step way to replace a placeholder squad with your actual team. Pick
 ids become the real FPL element ids; `--gw` defaults to the state's current gameweek.
 
+**Auto-sync (daemon, 2026-09-04).** Nobody runs `pull-squad`/`advance-gw` by hand any more:
+`daemon/sync.py` `SeasonSync.ensure(N)` rolls the state to gameweek N on its own — squad =
+the 15 fielded in N-1 (public picks endpoint, bank from `entry_history`), `free_transfers`
+replayed from `/entry/{id}/history/` (1 after GW1, then `min(5, max(ft − used, 0) + 1)`;
+wildcard/free-hit GWs spend nothing), `current_gw = N`, `active_chip = none`, an
+`auto-sync` history entry; no-op (`season_sync status=current`) when already at/past N. Two
+callers: the post-GW review wake right after a GW is graded (`sync(settled + 1)`) and the
+brief wake before every draft (`sync(deadline gw)`, the stale-squad guard — a failed sync is a
+`⚠ season state still at GWx — sync failed: …` line on the draft, `sync_error` event, never a
+lost wake). `python3 -m daemon sync [--gw N]` is the hand-crank (exit 1 on error). Needs an
+entry id (`FPL_ENTRY_ID` / state `entry_id`; none → `skipped`). `bought_for` = current price
+(the picks endpoint has no purchase price), so selling prices can be a touch off. Why: after
+GW2 the roll was a manual TODO that never ran, and every brief until GW3 was drafted from the
+GW1 squad. Harness `tests/test_sync.py` + the seam tests in test_brief/test_review.
+
 ## Agent skills
 
 ### Issue tracker

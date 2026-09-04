@@ -258,6 +258,26 @@ lose search, at $4.75 they are skipped (gaffer + AM still run). Rails and
 thresholds are `gaffer.env` overrides (`GAFFER_WAKE_MAX_*`, `GAFFER_LEDGER_*`).
 To rerun a draft's helpers by hand, delete the report files first (write-once).
 
+## Season-state auto-sync
+
+`season-state.json` on the Pi rolls forward on its own: the review wake syncs it
+to `settled GW + 1` the moment a gameweek is graded, and every draft wake checks
+it is at the deadline's GW before drafting (squad as actually fielded, bank, free
+transfers replayed from the entry history). Journal: `season_sync` (`status=`
+`current|synced|skipped|error`) / `sync_error`; a failed sync shows on the draft
+as `⚠ season state still at GWx — sync failed: …`. Needs `FPL_ENTRY_ID` in
+`/etc/fpl-gaffer/gaffer.env` (it is). By hand:
+
+```sh
+sudo -u gaffer env FPL_ENTRY_ID=<id> python3 -m daemon sync          # next unfinished GW
+sudo -u gaffer env FPL_ENTRY_ID=<id> python3 -m daemon sync --gw 5
+```
+
+Hazard (open): the file is git-tracked but Pi-written, so `git status` on the Pi
+is permanently dirty for it (and for `agent/memory/learnings.md`); a commit on
+main that touches either file will make the Pi's pull refuse. Do not edit them on
+main.
+
 ## Daily Scout timer (#57)
 
 `fpl-gaffer-scout.timer` wakes `python3 -m daemon scout` **once a day at 04:30
