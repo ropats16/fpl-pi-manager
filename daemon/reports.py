@@ -64,6 +64,29 @@ def read_scout_log(reports_dir, gw):
         return f.read().strip()
 
 
+def latest_scout_entry(reports_dir, gw):
+    """The newest entry of the GW's Scout log (its `### …` line + body), ""
+    if the log has none. Entries are newest-first, so it is the first
+    `### ` block (#57)."""
+    text = read_scout_log(reports_dir, gw)
+    start = text.find("### ")
+    if start == -1 or (start > 0 and text[start - 1] != "\n"):
+        return ""
+    end = text.find("\n### ", start)
+    return (text[start:] if end == -1 else text[start:end]).strip()
+
+
+def urgent_line(entry):
+    """The first line of a Scout entry carrying the URGENT tag (markdown
+    emphasis stripped, ≤240 chars), or None. The tag is the Scout charter's
+    "could void the current plan" flag; the daemon surfaces it (#57)."""
+    for line in (entry or "").splitlines()[1:]:
+        if "URGENT" in line:
+            line = line.strip().replace("**", "").replace("__", "").lstrip("-* ").strip()
+            return line if len(line) <= 240 else line[:239].rstrip() + "…"
+    return None
+
+
 def read_reports(reports_dir, gw):
     """{role: body} for every helper-role report in the GW folder (headers
     stripped), sorted by role. Only `<role>.md` for a known helper role counts:

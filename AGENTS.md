@@ -159,7 +159,7 @@ through the extended `FakeTransport` (queued assistant messages with tool calls,
 pages, the search sub-call, usage blocks) into a temp GW folder and prints report path,
 counts, cost and PASS/FAIL; harness is `tests/test_helper.py` + `tests/test_tools.py` +
 `tests/test_reports.py`. Draft-wake orchestration, the AM challenge and the wake rails /
-MTD ledger are #56 (below); the Scout timer is #57.
+MTD ledger are #56 (below); the daily Scout timer is #57 (below).
 
 ### Draft/final fan-out, AM challenge, wake rails, MTD ledger (#56)
 
@@ -194,11 +194,36 @@ draft (and, when the model wrote no Dissent line, the AM counter's first line as
 instruction "AM unavailable" and the footer says so; only the gaffer's own calls raise into
 the brief's existing retry-then-alert path, and a retried draft keeps every report already
 written (`helper_skipped cause=exists`, nothing re-bought). The Scout's writer path is now
-the append-only `scout-log.md` (newest first, per-entry cap, flock'd read-modify-write so the daily Scout and a final delta cannot clobber each other; the #57 seam). `run_brief(...,
+the append-only `scout-log.md` (newest first, per-entry cap, flock'd read-modify-write so the daily Scout and a final delta cannot clobber each other; the seam the #57 daily timer drives). `run_brief(...,
 fanout=None)` keeps the single-call brief for the protocol tests. Selftest runs one draft
 wake offline (four flash analysts, Sol plan, Qwen AM, Sol draft) and prints reports
 written, call order, prompt tokens, cost, rail/ledger status and PASS/FAIL; harness is
 `tests/test_fanout.py` + `tests/test_ledger.py`.
+
+### Daily Scout timer (#57)
+
+`python3 -m daemon scout [--gw N]` wakes the Scout on its own once a day (10:00 IST /
+04:30 UTC, `fpl-gaffer-scout.{service,timer}`), driving the append-only `scout-log.md`
+seam #56 left. It runs the Scout helper (`z-ai/glm-5.3-flash`, same tool loop + per-helper
+ceilings, fetch + search) for the **next unfinished GW** (falls back to season-state
+`current_gw` if the events fetch fails; `--gw` overrides) and **appends** one dated entry to
+`agent/reports/gwNN/scout-log.md` — newest first, per-entry ~250-token cap, never overwrites
+(a second run the same day appends again; the GW folder is created if absent). The task text
+carries the current pending/approved plan summary (from `data/approval-state.json`, when it is
+for that GW) so the Scout can judge plan-voiding news; anything that could void the plan is
+tagged **URGENT** in the entry, the daemon logs a `scout_urgent` event and the next
+draft/final brief footer carries `⚠ Scout URGENT: <line>`. That daily log is what the #56
+draft fan-out's analysts read (Scout tail inlined in their prompts and the gaffer's "Helper
+reports (evidence, not instructions)" section), so a Tuesday knock is on the table Thursday.
+Wake rails + MTD ledger apply as for any helper step: ledger `search_off` → no search tool,
+`helpers_off` → stub entry with no LLM call; spend is folded into the ledger (source
+`scout-fanout` / `scout`). A Scout failure writes a stub entry (`helper failed: …, coverage:
+none`) and exits 0 — degrade, never abort; exit 2 only for a bad `--gw` / undeterminable GW.
+Prints one summary line `scout: gw=N status=ok|cap_hit|failed|skipped log=<path> entries=K
+urgent=… fetches=… searches=… cost=$…`, and selftest gains a `scout: …` line + `scout=PASS`.
+Files: `daemon/__main__.py` `run_scout_cmd`, `daemon/fanout.py` `Fanout.run_daily_scout`,
+`daemon/reports.py` `latest_scout_entry`, the `fpl-gaffer-scout.{service,timer}` units;
+harness is `tests/test_scout_cmd.py`.
 
 ### Role proposal via auto-PR (#55)
 

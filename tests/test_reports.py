@@ -10,8 +10,8 @@ import unittest
 
 from daemon.logging_setup import StructuredLogger
 from daemon.prompt import estimate_tokens
-from daemon.reports import (ReportRefused, ReportWriter, read_reports,
-                            read_scout_log)
+from daemon.reports import (ReportRefused, ReportWriter, latest_scout_entry,
+                            read_reports, read_scout_log, urgent_line)
 
 def _read(path):
     with open(path, encoding="utf-8") as f:
@@ -168,6 +168,22 @@ class ScoutLogTest(unittest.TestCase):
         got = read_scout_log(self.tmp, 4)
         self.assertIn("SCOUT ENTRY", got)
         self.assertIn("# Scout log — GW04", got)
+
+    def test_latest_scout_entry_is_the_top_entry_only(self):
+        self.assertEqual(latest_scout_entry(self.tmp, 4), "")
+        self.w.write("scout", "OLD: URGENT Saka out", SCOUT_HEADER)
+        self.w.write("scout", "NEW: all quiet", dict(SCOUT_HEADER, finished="2026-09-04T10:03:00Z"))
+        latest = latest_scout_entry(self.tmp, 4)
+        self.assertTrue(latest.startswith("### 2026-09-04T10:03:00Z — scout"))
+        self.assertIn("NEW: all quiet", latest)
+        self.assertNotIn("OLD", latest)
+
+    def test_urgent_line_is_the_first_urgent_line_of_an_entry_or_none(self):
+        self.assertIsNone(urgent_line("### ts — scout (…)\n\nall quiet\n"))
+        entry = ("### ts — scout (…)\n\n**URGENT** — Saka out 3 weeks (presser, 4 Sep).\n"
+                 "URGENT: also Rice doubtful.\n")
+        self.assertEqual(urgent_line(entry), "URGENT — Saka out 3 weeks (presser, 4 Sep).")
+        self.assertIsNone(urgent_line(""))
 
 
 if __name__ == "__main__":

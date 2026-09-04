@@ -1,0 +1,13 @@
+[Unit]
+Description=FPL Gaffer daily Scout timer (10:00 IST news sweep)
+
+[Timer]
+# Once a day at 10:00 IST (04:30 UTC) — after the overnight FPL price changes
+# settle (~01:30 UTC), so the Scout sweeps a stable board (#57). One entry per
+# day appended to scout-log.md; the draft/final fan-out reads it.
+OnCalendar=*-*-* 04:30:00 UTC
+# Fire on next boot if the Pi slept through the scheduled wake.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

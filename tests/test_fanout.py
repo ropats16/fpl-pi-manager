@@ -294,6 +294,86 @@ class FinalDeltaTest(FanoutHarness):
         self.assertNotIn("Dissent", t.sent[0]["text"])
         self.assertIn("status failed", self._file("scout-log.md"))
 
+    def test_urgent_delta_is_surfaced_in_the_final_footer(self):
+        self.store.reset_for(2)
+        self.store.set_pending(2, PLAN)
+        self.store.approve()
+        self.store.draft_sent = True
+        self.store.save()
+        t = FakeTransport(llm_replies_by_model={FLASH: [SCOUT_DELTA], GAFFER: [FINAL]})
+        rc, t, llm = self._run(FINAL_NOW, t)
+        self.assertEqual(rc, 0)
+        self.assertIn("⚠ Scout URGENT: URGENT: Saka doubtful", t.sent[0]["text"])
+        urgent = self._events("scout_urgent")
+        self.assertEqual([e["kind"] for e in urgent], ["final"])
+
+
+class DailyScoutTest(FanoutHarness):
+    """Fanout.run_daily_scout (#57): the timer's wake — one Scout sweep against
+    the current plan, appended newest-first; an URGENT finding is an event now
+    and a footer line on the next brief."""
+
+    def _daily(self, transport, plan=PLAN, ledger=None, now=DRAFT_NOW):
+        fanout, telegram, llm, logger = self._fanout(transport, ledger, clock=_Clock(now))
+        res = fanout.run_daily_scout(2, plan, now=_dt(now))
+        return res, transport, llm
+
+    def test_sweeps_once_with_the_plan_in_the_task_and_appends_newest_first(self):
+        t = FakeTransport(llm_replies_by_model={FLASH: ["Day one: quiet.\n\nCoverage: FPL.",
+                                                        "Day two: quiet.\n\nCoverage: FPL."]})
+        res, t, _ = self._daily(t)
+        self.assertEqual(res.kind, "scout")
+        self.assertEqual([r.status for r in res.results], ["ok"])
+        task = t.llm_requests[0]["messages"][-1]["content"]
+        self.assertIn("Daily sweep", task)
+        self.assertIn("(C) Haaland", task)
+        self.assertIn("URGENT", task)
+        self.assertIsNone(res.urgent)
+        self.assertEqual(res.footer(), "")
+        res2, _, _ = self._daily(t, now="2026-08-28T18:00:00Z")
+        log = self._file("scout-log.md")
+        self.assertLess(log.index("Day two"), log.index("Day one"))
+        self.assertGreater(res.cost_usd + res2.cost_usd, 0)
+
+    def test_urgent_finding_is_an_event_and_a_footer_line(self):
+        t = FakeTransport(llm_replies_by_model={FLASH: [SCOUT_DELTA]})
+        res, _, _ = self._daily(t)
+        self.assertEqual(res.urgent, "URGENT: Saka doubtful (Arteta presser, 29 Aug). Nothing else moved.")
+        self.assertIn("⚠ Scout URGENT: URGENT: Saka doubtful", res.footer())
+        urgent = self._events("scout_urgent")
+        self.assertEqual(len(urgent), 1)
+        self.assertEqual((urgent[0]["gw"], urgent[0]["kind"]), (2, "scout"))
+        self.assertIn("Saka doubtful", urgent[0]["line"])
+
+    def test_no_plan_is_said_so_and_helpers_off_is_a_stub_without_a_call(self):
+        t = FakeTransport(llm_replies_by_model={FLASH: ["quiet.\n\nCoverage: FPL."]})
+        res, t, _ = self._daily(t, plan=None)
+        self.assertIn("no plan on record", t.llm_requests[0]["messages"][-1]["content"])
+        ledger = Ledger(self.ledger_path)
+        ledger.add(4.9, _dt(DRAFT_NOW), source="seed")
+        t2 = FakeTransport(llm_replies_by_model={FLASH: ["MUST NOT RUN"]})
+        res, t2, _ = self._daily(t2, ledger=ledger)
+        self.assertEqual(t2.llm_requests, [])
+        self.assertEqual(res.results[0].status, "skipped")
+        self.assertIn("helpers off", self._file("scout-log.md"))
+        self.assertIn("⚠ Helper gaps: scout — month-to-date ledger: helpers off", res.footer())
+
+    def test_draft_surfaces_a_standing_urgent_entry_from_the_daily_log(self):
+        # Tuesday's URGENT entry reaches Thursday's draft: the fan-out re-reads
+        # the log head (no Scout run) and both the gaffer's instructions and
+        # the Telegram footer carry it.
+        t = FakeTransport(llm_replies_by_model={FLASH: [SCOUT_DELTA]})
+        self._daily(t)
+        self.store.reset_for(2)
+        rc, t, _ = self._run(DRAFT_NOW, self._transport())
+        self.assertEqual(rc, 0)
+        self.assertEqual([e["role"] for e in self._events("helper_start")][-5:],
+                         list(ANALYSTS) + ["am"])          # no Scout run on the draft
+        self.assertIn("⚠ Scout URGENT: URGENT: Saka doubtful", t.sent[0]["text"])
+        user_turn = t.llm_requests[-1]["messages"][-1]["content"]
+        self.assertIn("Scout flagged URGENT", user_turn)
+        self.assertIn("Saka doubtful", user_turn)
+
 
 class WakeRailsTest(unittest.TestCase):
     class _Llm:

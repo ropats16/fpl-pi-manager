@@ -70,6 +70,10 @@ class SelftestTest(unittest.TestCase):
         self.assertIn("rails=none", text)
         self.assertIn("mode=full", text)
         self.assertIn("fanout=PASS", text)
+        # #57: the daily Scout demo — two sweeps into one log, newest first,
+        # the second one URGENT and flagged.
+        self.assertIn("scout: gw=4 entries=2 newest-first=True urgent=True", text)
+        self.assertIn("scout=PASS", text)
 
     def test_selftest_helper_report_never_lands_in_the_repo(self):
         run_selftest(out=io.StringIO())

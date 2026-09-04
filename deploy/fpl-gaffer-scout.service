@@ -1,0 +1,41 @@
+[Unit]
+Description=FPL Gaffer daily Scout wake (news sweep -> dated scout-log entry)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gaffer
+WorkingDirectory=/opt/fpl-gaffer
+# Daily Scout wake (#57): runs the Scout helper (z-ai/glm-5.3-flash, fetch +
+# search, per-helper ceilings) for the next unfinished GW and APPENDS one dated
+# entry to agent/reports/gwNN/scout-log.md (newest first, never overwrites).
+# The task carries the current pending/approved plan summary so the Scout can
+# flag plan-voiding news — anything that could void the plan is tagged URGENT,
+# the daemon logs scout_urgent and the next draft/final brief footer carries it.
+# This daily log is the evidence the #56 draft fan-out's analysts read, so a
+# Tuesday knock is on the table Thursday. Wake rails + MTD ledger apply as for
+# any helper; a Scout failure writes a stub entry and exits 0.
+ExecStart=/usr/bin/python3 -m daemon scout
+
+# The Scout thinks (tool loop + write-up), so like the brief it loads BOTH the
+# Telegram token (build_stack needs it) and the OpenRouter key, plus the Odds
+# API key the fetcher appends for its keyed host only — optional the same way
+# (without it that one fetch degrades to a coverage gap).
+LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
+LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key
+LoadCredentialEncrypted=odds-api-key:/etc/credstore.encrypted/odds-api-key
+
+# Non-secret config outside every gaffer-writable path (numeric allowlist). (#10 §2)
+EnvironmentFile=-/etc/fpl-gaffer/gaffer.env
+
+# Hardening — same defense-in-depth as the daemon/watch/brief; the Scout writes
+# only its log + ledger under the repo (data/ is gitignored).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/fpl-gaffer
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=256M
