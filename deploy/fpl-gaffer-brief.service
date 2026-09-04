@@ -15,9 +15,12 @@ WorkingDirectory=/opt/fpl-gaffer
 ExecStart=/usr/bin/python3 -m daemon brief
 
 # The brief thinks, so unlike the watch it loads BOTH the Telegram token and the
-# OpenRouter key — the two credentials the draft/final generation needs.
+# OpenRouter key — the two credentials the draft/final generation needs — plus
+# the Odds API key the fixtures/odds helper's fetch appends (#54; provisioned
+# 2026-09-04, ready for the #56 fan-out).
 LoadCredentialEncrypted=telegram-token:/etc/credstore.encrypted/telegram-token
 LoadCredentialEncrypted=openrouter-key:/etc/credstore.encrypted/openrouter-key
+LoadCredentialEncrypted=odds-api-key:/etc/credstore.encrypted/odds-api-key
 
 # Non-secret config outside every gaffer-writable path (numeric allowlist). (#10 §2)
 EnvironmentFile=-/etc/fpl-gaffer/gaffer.env
