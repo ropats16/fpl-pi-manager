@@ -722,12 +722,6 @@ def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
                      error=type(e).__name__, detail=str(e))
         return 1
 
-    # A settled GW is the cue to roll the season state to the next one (squad
-    # as fielded, FT, bank) — before the grading below reads the state, and
-    # regardless of how the rest of this wake goes (it never raises).
-    if sync is not None:
-        sync(gw + 1)
-
     # Season state: tolerate a missing/corrupt file — the review still runs, just
     # with no daemon decision and (if no entry) no picks to fall back to.
     state = {}
@@ -746,6 +740,13 @@ def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
     else:
         picks = _state_picks(state)
         picks_source = "state"
+
+    # A settled GW is the cue to roll the season state to the next one (squad
+    # as fielded, FT, bank). After this wake's own state read — the fallback
+    # picks above must be the settled GW's squad, not the rolled one — and
+    # before the LLM, so a failed review still leaves the state current.
+    if sync is not None:
+        sync(gw + 1)
 
     projections = load_gw_projections(snapshot_path(snapshot_dir, gw))
     sc = build_scorecard(gw, actuals.get("live") or {}, picks,
