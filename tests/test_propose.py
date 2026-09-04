@@ -69,7 +69,8 @@ class PathAclTest(unittest.TestCase):
     def test_everything_else_is_refused(self):
         for rel in ("daemon/evil.py", "agent/GAFFER.md", "agent/roles/../GAFFER.md",
                     "/agent/roles/x.md", "agent/roles/.hidden.md", "agent/roles/x.py",
-                    "agent/roles//x.md", "deploy/fpl-gaffer.service", "", "agent/roles"):
+                    "agent/roles//x.md", "deploy/fpl-gaffer.service", "", "agent/roles",
+                    "agent/roles/sub/x.md", "agent/roles-evil/x.md"):
             self.assertIsNotNone(path_violation(rel), rel)
 
 
@@ -113,6 +114,20 @@ class RunProposeTest(unittest.TestCase):
         self.assertEqual(self._run(Proposal("!!!", "e", "body"))[0].status, "refused")
         self.assertEqual(self._run(Proposal("ok", "e", "  "))[0].status, "refused")
 
+    def test_role_path_colliding_with_the_note_is_refused(self):
+        p = Proposal("chips", "e", "body", path="agent/roles/chips.evidence.md")
+        res, host, ev = self._run(p)
+        self.assertEqual(res.status, "refused")
+        self.assertEqual(host.proposals, [])
+
+    def test_renamed_keeps_body_and_explicit_path_only(self):
+        p, _ = parse_proposal(BLOCK)
+        r = p.renamed("Set pieces")
+        self.assertEqual((r.slug, r.path, r.role_body), ("set-pieces", "agent/roles/set-pieces.md",
+                                                         p.role_body))
+        q = Proposal("a", "e", "b", path="daemon/x.py").renamed("c")
+        self.assertEqual(q.path, "daemon/x.py")                  # still the ACL's call
+
     def test_existing_branch_is_write_once_refused(self):
         p, _ = parse_proposal(BLOCK)
         res, host, ev = self._run(p, host=FakeGitHost(existing={"gaffer/chips-analyst"}))
@@ -148,8 +163,8 @@ class GhGitHostTest(unittest.TestCase):
 
         def run(argv, env, cwd):
             self.calls.append((argv, env, cwd))
-            if self.fail_on and argv[:2] == self.fail_on:
-                return 1, "", "remote: permission denied"
+            if self.fail_on and self.fail_on in argv:
+                return 1, "", f"remote: permission denied (token {self.TOKEN})"
             if argv[:2] == ["git", "ls-remote"]:
                 return 0, self.ls_remote, ""
             if argv[:2] == ["gh", "pr"]:
@@ -194,13 +209,16 @@ class GhGitHostTest(unittest.TestCase):
             self.assertNotIn(self.TOKEN, " ".join(argv))
             self.assertEqual(env["GH_TOKEN"], self.TOKEN)
             self.assertEqual(env["GAFFER_GITHUB_TOKEN"], self.TOKEN)
+            self.assertFalse(any(k.startswith("GIT_TRACE") for k in env))
         # The change set was written into the worktree (cwd of add/commit), not the repo.
         wt = self.calls[2][2]
         self.assertNotEqual(wt, self.repo)
         self.assertFalse(os.path.exists(os.path.join(self.repo, "agent")))
 
-    def test_push_failure_raises_and_still_removes_the_worktree(self):
-        self.fail_on = ["git", "-c"]                     # first -c call is the commit
+    def test_push_refused_raises_scrubbed_no_pr_and_still_removes_the_worktree(self):
+        # The "token scope" scenario: the remote refuses the push (and echoes the
+        # credential in stderr) -> scrubbed error, no `gh pr create`, cleanup.
+        self.fail_on = "push"
         with self.assertRaises(GitHostError) as cm:
             self.host.open_pr("gaffer/chips", self.files, "t", "b")
         self.assertIn("permission denied", str(cm.exception))

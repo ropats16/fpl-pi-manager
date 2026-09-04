@@ -33,11 +33,17 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 
+from daemon.config import DEFAULT_GITHUB_REPO
+
 ROLES_DIR = "agent/roles"
 BRANCH_PREFIX = "gaffer/"
 DEFAULT_BASE = "main"
-DEFAULT_REPO = "ropats16/fpl-pi-manager"
-SUBPROCESS_TIMEOUT = 180
+NOTE_SUFFIX = ".evidence.md"
+# Seven subprocesses at most per proposal; this bounds how long a chat wake
+# can stall on a hung remote (~7 min worst case, ~10 s typical).
+SUBPROCESS_TIMEOUT = 60
+NO_TOKEN_REPLY = ("⚠️ Role proposals need the GitHub token on this box "
+                  "(deploy/README.md: github-token) — nothing proposed.")
 
 _BLOCK = re.compile(r"```propose\b[ \t]*\r?\n(.*?)```", re.DOTALL)
 _HEADER_KEYS = ("name", "evidence", "path")
@@ -66,9 +72,21 @@ def is_propose_request(text):
     return (text or "").strip().casefold().startswith(PROPOSE_REQUEST_PREFIX)
 
 
+def requested_name(text):
+    """The `<name>` Rohit typed after `propose role:` ('' when none)."""
+    if not is_propose_request(text):
+        return ""
+    return (text or "").strip()[len(PROPOSE_REQUEST_PREFIX):].strip()
+
+
 def make_proposer(host, logger):
     """The one callable both triggers (chat reply, review reply) hand a parsed
-    Proposal to: (proposal, trigger) -> ProposeResult."""
+    Proposal to: (proposal, trigger) -> ProposeResult. None when no git host
+    is configured (no token): the callers then neither invite nor honour a
+    block, and a chat request gets NO_TOKEN_REPLY without a model call."""
+    if host is None:
+        return None
+
     def propose(proposal, trigger):
         return run_propose(proposal, host, logger, trigger=trigger)
     return propose
@@ -82,14 +100,21 @@ def slugify(name):
 
 
 class Proposal:
-    __slots__ = ("name", "slug", "evidence", "role_body", "path")
+    __slots__ = ("name", "slug", "evidence", "role_body", "path", "explicit_path")
 
     def __init__(self, name, evidence, role_body, path=None):
         self.name = (name or "").strip()
         self.slug = slugify(self.name)
         self.evidence = (evidence or "").strip()
         self.role_body = (role_body or "").strip()
-        self.path = (path or "").strip() or f"{ROLES_DIR}/{self.slug}.md"
+        self.explicit_path = (path or "").strip()
+        self.path = self.explicit_path or f"{ROLES_DIR}/{self.slug}.md"
+
+    def renamed(self, name):
+        """The same proposal under the name Rohit asked for (chat trigger: the
+        request names the role, the model only drafts it). An explicit
+        `path:` the model wrote is kept for the ACL to judge."""
+        return Proposal(name, self.evidence, self.role_body, path=self.explicit_path)
 
     @property
     def branch(self):
@@ -97,7 +122,7 @@ class Proposal:
 
     @property
     def note_path(self):
-        return f"{ROLES_DIR}/{self.slug}.evidence.md"
+        return f"{ROLES_DIR}/{self.slug}{NOTE_SUFFIX}"
 
     @property
     def title(self):
@@ -132,9 +157,10 @@ def parse_proposal(reply_text):
 
 def path_violation(rel):
     """Why `rel` may not be in a proposal change set, or None when it is a
-    markdown file under the roles directory. Absolute paths, `..`, hidden
-    segments and anything outside ROLES_DIR (which is every tier-1 path:
-    daemon/, deploy/, .github/ …) are refused."""
+    markdown file directly under the roles directory (`agent/roles/<x>.md`).
+    Absolute paths, `..`, hidden segments, subdirectories and anything outside
+    ROLES_DIR (which is every tier-1 path: daemon/, deploy/, .github/ …) are
+    refused."""
     if not rel or os.path.isabs(rel) or "\\" in rel:
         return "not a relative path"
     parts = rel.split("/")
@@ -142,8 +168,8 @@ def path_violation(rel):
         return "path escapes or hides"
     if os.path.normpath(rel) != rel:
         return "path not normalised"
-    if not rel.startswith(ROLES_DIR + "/"):
-        return f"outside {ROLES_DIR}/"
+    if parts[:-1] != ROLES_DIR.split("/"):
+        return f"not directly under {ROLES_DIR}/"
     if not rel.endswith(".md"):
         return "not a markdown file"
     return None
@@ -200,6 +226,9 @@ def run_propose(proposal, host, logger, trigger="chat", now=None):
         return refuse("no usable role name")
     if not proposal.role_body:
         return refuse("empty role file")
+    if proposal.path.endswith(NOTE_SUFFIX):
+        return refuse(f"{proposal.path}: a role file cannot be an evidence note",
+                      path=proposal.path)
     files = {proposal.path: proposal.role_body + "\n",
              proposal.note_path: render_note(proposal, trigger, now)}
     for rel in files:
@@ -208,8 +237,7 @@ def run_propose(proposal, host, logger, trigger="chat", now=None):
             return refuse(f"{rel}: {why}", path=rel)
     if host is None:
         logger.event("propose_failed", name=name, reason="no github token")
-        return ProposeResult("failed", proposal,
-                             reason="no GitHub token configured on this box")
+        return ProposeResult("failed", proposal, reason="no GitHub token configured")
     try:
         if host.branch_exists(proposal.branch):
             return refuse(f"branch {proposal.branch} already exists (write-once)",
@@ -219,9 +247,9 @@ def run_propose(proposal, host, logger, trigger="chat", now=None):
         url = host.open_pr(proposal.branch, files, proposal.title,
                            render_pr_body(proposal, trigger))
     except Exception as e:                 # noqa: BLE001 — degrade, never abort the wake
-        logger.event("propose_failed", name=name, branch=proposal.branch,
-                     error=type(e).__name__, detail=str(e))
-        return ProposeResult("failed", proposal, reason=f"{type(e).__name__}: {e}")
+        reason = f"{type(e).__name__}: {e}"
+        logger.event("propose_failed", name=name, branch=proposal.branch, reason=reason)
+        return ProposeResult("failed", proposal, reason=reason)
     logger.event("propose_opened", name=name, branch=proposal.branch, url=url,
                  trigger=trigger)
     return ProposeResult("ok", proposal, url=url)
@@ -267,7 +295,7 @@ class GhGitHost:
     to `refs/heads/gaffer/<slug>` over HTTPS, then `gh pr create`. The
     worktree is removed whatever happens."""
 
-    def __init__(self, repo_root, token, repo=DEFAULT_REPO, base=DEFAULT_BASE,
+    def __init__(self, repo_root, token, repo=DEFAULT_GITHUB_REPO, base=DEFAULT_BASE,
                  run=None, author=("FPL gaffer", "gaffer@fpl-pi")):
         self.repo_root = repo_root
         self._token = token
@@ -276,8 +304,15 @@ class GhGitHost:
         self._run = run or _subprocess_run
         self.author = author
 
+    def _scrub(self, text):
+        return text.replace(self._token, "***") if self._token else text
+
     def _env(self):
-        env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+        # No inherited token vars, and no git tracing that could echo the
+        # credential into stderr (which becomes the error text).
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("GH_TOKEN", "GITHUB_TOKEN", "GIT_CURL_VERBOSE")
+               and not k.startswith("GIT_TRACE")}
         env["GAFFER_GITHUB_TOKEN"] = self._token
         env["GH_TOKEN"] = self._token
         env["GIT_TERMINAL_PROMPT"] = "0"
@@ -291,7 +326,7 @@ class GhGitHost:
         rc, out, err = self._run(argv, self._env(), cwd or self.repo_root)
         if rc != 0:
             raise GitHostError(f"{' '.join(argv[:2])} failed (rc={rc}): "
-                               f"{(err or out).strip()[:400]}")
+                               f"{self._scrub((err or out).strip()[:400])}")
         return out
 
     def branch_exists(self, branch):

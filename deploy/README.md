@@ -80,10 +80,15 @@ printf '%s' 'PASTE_ODDS_API_KEY' | sudo systemd-creds encrypt --name=odds-api-ke
 
 The **`github-token` credential (#55 auto-PR)** is optional the same way: without it a
 `propose role: …` request answers "no GitHub token configured". Use a fine-grained PAT on
-`ropats16/fpl-pi-manager` with *Contents: read/write* and *Pull requests: read/write* only
-(no merge — the daemon never merges; branch protection on `main` keeps a poisoned gaffer to
-"open a PR Rohit rejects"). The daemon pushes only `refs/heads/gaffer/<slug>` (and the same
-token backs the `pi/live` backup push when that is wired). `gh` must be on the Pi
+`ropats16/fpl-pi-manager` with *Contents: read/write* and *Pull requests: read/write* only.
+A PAT cannot be limited to branches, so the "push to `gaffer/*` and `pi/live` only, no
+merge" scope (#51 Q5) is enforced by a **ruleset on `main`** (Settings → Rules: require a
+pull request before merging, block force pushes, no bypass for the PAT's user) — with it a
+push to `main` from the Pi is refused and a poisoned gaffer can at most open a PR Rohit
+rejects. The daemon itself pushes only `refs/heads/gaffer/<slug>` (the same token backs the
+`pi/live` backup push when that is wired). Verify the scope once from the Pi:
+`git push https://github.com/ropats16/fpl-pi-manager.git HEAD:refs/heads/gaffer/scope-check`
+succeeds and `… HEAD:main` is refused (delete the scratch branch after). `gh` must be on the Pi
 (`sudo apt install gh`); the token reaches `git`/`gh` through the subprocess environment
 only (`GH_TOKEN` + a credential helper), never a URL or argv.
 

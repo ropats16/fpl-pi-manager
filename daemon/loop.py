@@ -22,7 +22,8 @@ from daemon.learnings import record_learnings
 from daemon.prompt import select_playbook
 from daemon.plan import (append_decision_log, is_approval, is_stop, parse_plan,
                          plan_summary)
-from daemon.propose import PROPOSE_HINT, is_propose_request, parse_proposal
+from daemon.propose import (NO_TOKEN_REPLY, PROPOSE_HINT, is_propose_request,
+                            parse_proposal, requested_name)
 
 
 def process_message(msg, cfg, telegram, llm, logger, assembler=None,
@@ -75,9 +76,14 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
             return True
 
     # --- debate / iterate / chat -> the model ---------------------------------
-    user_text = msg.text
-    if proposer is not None and is_propose_request(msg.text):
-        user_text = msg.text + "\n\n" + PROPOSE_HINT
+    # --- role proposal request (#55) — only on Rohit's explicit ask ----------
+    asked = is_propose_request(msg.text)
+    if asked and proposer is None:
+        # No GitHub token on this box: say so, spend nothing.
+        logger.event("propose_refused", reason="no github token", text=msg.text)
+        telegram.send_message(msg.chat_id, NO_TOKEN_REPLY)
+        return True
+    user_text = msg.text + "\n\n" + PROPOSE_HINT if asked else msg.text
     messages = None
     if assembler is not None:
         try:
@@ -128,11 +134,20 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
                                  error=type(e).__name__, detail=str(e))
 
     # A role proposal (#55): the block never reaches Telegram; the outcome
-    # line does. The path itself never raises (refused/failed are results).
+    # line does. Honoured only on Rohit's `propose role: <name>` — the request
+    # names the role, the model drafts it — and an unasked-for block in plain
+    # chat is stripped and logged, never a PR. The path itself never raises.
     if proposer is not None:
         proposal, without = parse_proposal(send_text)
-        if proposal is not None:
+        if proposal is not None and asked:
+            wanted = requested_name(msg.text)
+            if wanted:
+                proposal = proposal.renamed(wanted)
             send_text = (without + "\n\n" + proposer(proposal, "chat").summary()).strip()
+        elif proposal is not None:
+            logger.event("propose_ignored", reason="not requested", name=proposal.name)
+            send_text = (without + "\n\n⛔ Unrequested role proposal dropped — ask "
+                         "`propose role: <name>` to open one.").strip()
 
     logger.event("reply", from_id=msg.from_id, chat_id=msg.chat_id,
                  prompt=msg.text, reply=send_text)
