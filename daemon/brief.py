@@ -141,9 +141,9 @@ def _snapshot(projections_path, snapshot_dir, gw, logger):
 
 def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
               logger, gw, reports_dir, now, projections_path=None,
-              snapshot_dir=None, fanout=None):
+              snapshot_dir=None, fanout=None, warning=None):
     user_text = f"produce the GW{gw} draft deadline brief"
-    footer, fo = "", None
+    footer, fo = warning or "", None
     if fanout is not None:
         # #56: analysts → internal plan → AM, then the draft below reads their
         # reports through the assembler. Helper trouble degrades into named
@@ -160,7 +160,7 @@ def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
         llm_complete, assembler_factory, user_text, logger, gw)
     if fo is not None:
         fanout.settle("draft-brief")     # the gaffer's own call counts too
-        footer = fo.footer(text)
+        footer = "\n".join(p for p in (fo.footer(text), warning) if p)
     if footer:
         # The gaps are the daemon's words, appended after the model's — a
         # helper that never delivered is never silently "covered".
@@ -298,10 +298,15 @@ def _do_act(store, telegram, allowlist, logger, actuator, state_path, gw, now,
 
 def run_brief(fetch, llm_complete, assembler_factory, store, telegram, allowlist,
               logger, actuator, state_path, reports_dir, projections_path=None,
-              snapshot_dir=None, now=None, fanout=None):
+              snapshot_dir=None, now=None, fanout=None, sync=None):
     """One hourly wake. Returns a process exit code (0 ok, 1 the wake did not
     complete). Every external edge is injected so the whole path runs offline in
     tests — same seam posture as run_watch (#17).
+
+    `sync(gw)` (daemon.sync.SeasonSync.ensure) runs before a draft so the
+    season state is at the deadline's GW — the guard against drafting from a
+    stale squad; a failed sync is a warning line on the draft, never a lost
+    wake.
 
     `fanout` (a daemon.fanout.Fanout, #56) makes the draft run the analysts and
     the AM first and the final run a Scout delta; None keeps the single-call
@@ -338,10 +343,17 @@ def run_brief(fetch, llm_complete, assembler_factory, store, telegram, allowlist
 
     try:
         if action == "draft":
+            warning = None
+            if sync is not None:
+                s = sync(gw)
+                if s.get("status") == "error":
+                    warning = (f"⚠ season state still at GW{s.get('from_gw')} — "
+                               f"sync failed: {s.get('reason')}")
             return _do_draft(llm_complete, assembler_factory, store, telegram,
                              allowlist, logger, gw, reports_dir, now,
                              projections_path=projections_path,
-                             snapshot_dir=snapshot_dir, fanout=fanout)
+                             snapshot_dir=snapshot_dir, fanout=fanout,
+                             warning=warning)
         if action == "final":
             return _do_final(llm_complete, assembler_factory, store, telegram,
                              allowlist, logger, gw,

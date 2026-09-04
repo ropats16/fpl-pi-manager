@@ -670,9 +670,10 @@ def next_review_gw(latest, last):
 
 def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
                store, telegram, allowlist, logger, learnings, state_path,
-               reports_dir, snapshot_dir, now=None, propose=None):
+               reports_dir, snapshot_dir, now=None, propose=None, sync=None):
     """One timer wake. Returns a process exit code (0 ok / quiet, 1 the wake
-    did not complete and should retry next tick).
+    did not complete and should retry next tick). `sync(gw)` (SeasonSync.ensure)
+    rolls the season state to the settled GW + 1 the moment a GW is graded.
 
     fetch_events()          -> distilled bootstrap events.
     fetch_actuals(gw)       -> {"live": <distill_live()>, "picks": <raw picks
@@ -720,6 +721,12 @@ def run_review(fetch_events, fetch_actuals, llm_complete, assembler_factory,
         logger.event("review_error", stage="actuals", gw=gw,
                      error=type(e).__name__, detail=str(e))
         return 1
+
+    # A settled GW is the cue to roll the season state to the next one (squad
+    # as fielded, FT, bank) — before the grading below reads the state, and
+    # regardless of how the rest of this wake goes (it never raises).
+    if sync is not None:
+        sync(gw + 1)
 
     # Season state: tolerate a missing/corrupt file — the review still runs, just
     # with no daemon decision and (if no entry) no picks to fall back to.

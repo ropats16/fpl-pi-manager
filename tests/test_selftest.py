@@ -62,9 +62,9 @@ class SelftestTest(unittest.TestCase):
         self.assertIn("tier1-refused=True", text)
         self.assertIn("propose=PASS", text)
         self.assertIn('"event": "fetch_refused"', text)
-        # #56: the draft fan-out demo — five reports, the run order, the AM
+        # #56: the draft fan-out demo — six reports, the run order, the AM
         # counter in the Dissent line, prompt under the cap, no rail crossed.
-        self.assertIn("fanout: gw=4 reports=5 order=availability>fixtures>quality>market>am",
+        self.assertIn("fanout: gw=4 reports=6 order=availability>fixtures>quality>market>chips>am",
                       text)
         self.assertIn("am-dissent=True reports-inlined=True", text)
         self.assertIn("rails=none", text)

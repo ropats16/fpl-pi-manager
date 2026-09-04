@@ -28,6 +28,7 @@ from daemon.propose import FakeGitHost, Proposal, make_proposer, run_propose
 from daemon.reports import ReportWriter, read_scout_log, scout_entries
 from daemon.review import ReviewStore, run_review
 from daemon.runtime import build_git_host, build_helper_tools, build_stack
+from daemon.sync import SeasonSync
 from daemon.telegram import Telegram
 from daemon.watch import run_watch
 
@@ -365,7 +366,61 @@ def run_watch_cmd(env=None, transport=None, out=None, fetch=None):
         telegram=telegram, allowlist=allowlist, logger=logger)
 
 
-def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
+def _bootstrap_cache():
+    """One distilled bootstrap per wake, fetched on first use, shared by the
+    events check and the season sync."""
+    boot = {}
+
+    def _bootstrap():
+        if "snap" not in boot:
+            boot["snap"] = fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))
+        return boot["snap"]
+    return _bootstrap
+
+
+def build_sync(env, logger, fetch_bootstrap):
+    """The season-state auto-sync over the public entry endpoints; entry id
+    from FPL_ENTRY_ID / the state (None → the sync reports 'skipped')."""
+    state_path = _state_path(env)
+    entry = _resolve_entry_id(env, state_path)
+    return SeasonSync(
+        state_path, entry,
+        fetch_picks=lambda gw: fpl_api.get(f"/entry/{entry}/event/{gw}/picks/"),
+        fetch_history=lambda: fpl_api.get(f"/entry/{entry}/history/"),
+        fetch_bootstrap=fetch_bootstrap, logger=logger)
+
+
+def run_sync_cmd(args, env=None, transport=None, out=None, fetch_events=None,
+                 now=None, sync=None):
+    """`daemon sync [--gw N]` — roll season-state.json to the next unfinished
+    gameweek by hand (the same path the review and draft wakes run on their
+    own). Exit 0 unless the sync errored (1) or the invocation is bad (2)."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    gw, rc = _gw_flag(list(args or []), "sync", out)
+    if rc:
+        return rc
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    _, _, logger = build_stack(cfg, transport, out)
+    now = now or datetime.now(timezone.utc)
+    bootstrap = _bootstrap_cache()
+    if fetch_events is None:
+        def fetch_events():
+            return bootstrap()["events"]
+    gw = _resolve_gw(gw, fetch_events, now, _state_path(env), logger)
+    if gw is None:
+        out.write("sync: could not determine the gameweek (pass --gw N)\n")
+        return 2
+    sync = build_sync(env, logger, bootstrap).ensure if sync is None else sync
+    res = sync(gw)
+    out.write(f"sync: gw={gw} status={res.get('status')} from={res.get('from_gw')} "
+              f"free_transfers={res.get('free_transfers')} squad={res.get('squad')}"
+              + (f" reason={res.get('reason')}" if res.get("reason") else "") + "\n")
+    return 1 if res.get("status") == "error" else 0
+
+
+def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None, sync=None):
     """`daemon brief` — the timer-driven deadline-brief wake (#18). Unlike the
     watch, the brief thinks: it loads the full config (the LLM key), assembles a
     grounded prompt, and on a draft tick fans out (#56: four analysts, the
@@ -388,9 +443,12 @@ def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
     def assembler_factory():
         return build_assembler(env, approval_store_path=approval_path)
 
+    bootstrap = _bootstrap_cache()
     if fetch is None:
         def fetch():
-            return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))["events"]
+            return bootstrap()["events"]
+    if sync is None:
+        sync = build_sync(env, logger, bootstrap).ensure
 
     return run_brief(fetch=fetch, llm_complete=llm.complete,
                      assembler_factory=assembler_factory, store=store,
@@ -399,7 +457,8 @@ def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None):
                      reports_dir=reports_dir,
                      projections_path=_projections_path(env),
                      snapshot_dir=_data_dir(env), now=now,
-                     fanout=build_fanout(cfg, env, transport, llm, logger))
+                     fanout=build_fanout(cfg, env, transport, llm, logger),
+                     sync=sync)
 
 
 def _resolve_entry_id(env, state_path):
@@ -423,7 +482,7 @@ def _resolve_entry_id(env, state_path):
 
 
 def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
-                   fetch_actuals=None, now=None):
+                   fetch_actuals=None, now=None, sync=None):
     """`daemon review` — the timer-driven post-GW review wake (#21). Like the
     brief it thinks (full config incl. the LLM key), but it is even cheaper day
     to day: a bare events check that spends tokens ONCE per finished gameweek and
@@ -454,12 +513,7 @@ def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
     # One bootstrap snapshot per wake, shared by both default fetchers (the events
     # check and — only if a GW settled — the actuals pull) so a quiet wake is a
     # single request and a live one reuses the same snapshot.
-    boot = {}
-
-    def _bootstrap():
-        if "snap" not in boot:
-            boot["snap"] = fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))
-        return boot["snap"]
+    _bootstrap = _bootstrap_cache()
 
     if fetch_events is None:
         def fetch_events():
@@ -467,6 +521,8 @@ def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
     if fetch_actuals is None:
         def fetch_actuals(gw):
             return fpl_api.fetch_actuals(gw, entry_id, bootstrap_snap=_bootstrap())
+    if sync is None:
+        sync = build_sync(env, logger, _bootstrap).ensure
 
     return run_review(fetch_events=fetch_events, fetch_actuals=fetch_actuals,
                       llm_complete=llm.complete,
@@ -475,7 +531,8 @@ def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
                       learnings=learnings, state_path=state_path,
                       reports_dir=reports_dir, snapshot_dir=_data_dir(env),
                       now=now,
-                      propose=make_proposer(build_git_host(cfg, REPO_ROOT), logger))
+                      propose=make_proposer(build_git_host(cfg, REPO_ROOT), logger),
+                      sync=sync)
 
 
 def _current_gw(state_path):
@@ -683,7 +740,7 @@ _SELFTEST_DRAFT = ("GW4 draft — roll FT, (C) Haaland (VC) Salah. Confidence ME
 
 def _selftest_fanout(cfg):
     """The #56 acceptance demo, offline: one draft wake fans out through the
-    fake transport — four flash analysts in order, the gaffer's internal plan,
+    fake transport — five flash analysts in order, the gaffer's internal plan,
     the Qwen AM challenge (no tools), then the draft whose Dissent line is the
     AM's counter — into a temp GW folder and a temp ledger. Prints the reports
     written, the call order, the prompt size, the cost estimate, the rail/ledger
@@ -704,7 +761,9 @@ def _selftest_fanout(cfg):
                 "**Quality** — Haaland xG 0.9/90 (SELFTEST canned Understat).\n\n"
                 "Coverage: checked Understat.",
                 "**Market** — Saka -0.1 overnight (SELFTEST canned FPL).\n\n"
-                "Coverage: checked FPL API."],
+                "Coverage: checked FPL API.",
+                "**Chips** — BB best GW7 double (SELFTEST canned FPL fixtures).\n\n"
+                "Coverage: checked fixtures per event."],
             h.models["am"]: [_SELFTEST_AM],
             cfg.model: [_SELFTEST_INTERNAL, _SELFTEST_DRAFT]},
         pages={_SELFTEST_FPL: '{"elements": [{"web_name": "Haaland", "status": "a"}]}'},
@@ -757,7 +816,8 @@ def _selftest_fanout(cfg):
     cost = done[0]["cost_usd"] if done else 0.0
     mtd = ledger.total(now)
     ok = (rc == 0 and models == expected_models and order == list(ANALYSTS) + ["am"]
-          and written == ["am.md", "availability.md", "fixtures.md", "market.md", "quality.md"]
+          and written == ["am.md", "availability.md", "chips.md", "fixtures.md",
+                          "market.md", "quality.md"]
           and dissent and inlined and tokens <= 25000 and logged and rail is None
           and cost > 0 and mtd > 0)
     lines = [json.dumps(e) for e in events_logged]
@@ -877,6 +937,8 @@ def main(argv):
         return run_helper_cmd(argv[2:])
     if len(argv) > 1 and argv[1] == "scout":
         return run_scout_cmd(argv[2:])
+    if len(argv) > 1 and argv[1] == "sync":
+        return run_sync_cmd(argv[2:])
     return run_daemon()
 
 
