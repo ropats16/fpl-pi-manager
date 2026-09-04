@@ -430,8 +430,8 @@ class HelperReportsSectionTest(unittest.TestCase):
             # ~3.5 chars/token: marker + enough filler to hit the write-time cap.
             return marker + " " + ("word " * ((tokens * 7 // 2) // 5))
 
-        for role, tok in (("availability", 700), ("fixtures", 700), ("quality", 700),
-                          ("market", 700), ("chips", 700), ("am", 500)):
+        for role, tok in (("availability", 1000), ("fixtures", 1000), ("quality", 1000),
+                          ("market", 1000), ("chips", 1000), ("am", 700)):
             with open(os.path.join(folder, f"{role}.md"), "w") as f:
                 f.write(f"---\nrole: {role}\n---\n{body(role.upper() + '-CAP', tok)}\n")
         with open(os.path.join(folder, "scout-log.md"), "w") as f:

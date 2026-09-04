@@ -145,7 +145,7 @@ conversation — the one place a raw API body (e.g. FPL bootstrap JSON, truncate
 they never reach the gaffer's prompt except through the capped, headed report.
 `daemon/reports.py` is the single write
 path: one file per role per GW, **write-once** (second write refused + logged), body capped
-at write time (analyst ~700 tok, AM ~500), header = role/model/timings/fetch+search
+at write time (analyst ~1000 tok, AM ~700 — raised from 700/500 on 2026-09-04 evidence), header = role/model/timings/fetch+search
 counts/coverage/status, and any path outside the GW folder refused. Per-helper ceilings
 (25 fetch / 15 search / 40 turns incl. the write-up / 15 min; `GAFFER_HELPER_MAX_*`) are
 tier-1 config: on a hit

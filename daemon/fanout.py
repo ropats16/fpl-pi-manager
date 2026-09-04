@@ -229,7 +229,7 @@ class Fanout:
 
     def _writer(self, role, gw):
         return ReportWriter(self.reports_dir, gw, logger=self.logger,
-                            cap_tokens=REPORT_CAP_TOKENS.get(role, 700))
+                            cap_tokens=REPORT_CAP_TOKENS.get(role, 1000))
 
     def _skip(self, role, gw, res, reason, cause):
         """Stub a helper without running it (rail / ledger). A stub that is
