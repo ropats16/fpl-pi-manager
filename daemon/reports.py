@@ -86,10 +86,21 @@ def urgent_line(entry):
     """The first line of a Scout entry carrying the URGENT tag (markdown
     emphasis stripped, ≤240 chars), or None. The tag is the Scout charter's
     "could void the current plan" flag; the daemon surfaces it (#57)."""
-    for line in (entry or "").splitlines()[1:]:
-        if "URGENT" in line:
-            line = line.strip().replace("**", "").replace("__", "").lstrip("-* ").strip()
-            return line if len(line) <= 240 else line[:239].rstrip() + "…"
+    def clean(s):
+        return s.strip().replace("**", "").replace("__", "").lstrip("-* ").strip()
+
+    lines = (entry or "").splitlines()[1:]
+    for i, line in enumerate(lines):
+        if "URGENT" not in line:
+            continue
+        line = clean(line)
+        # A header-only tag ("URGENT — plan-touching") says nothing: carry the
+        # first finding under it as well (live lesson, #57).
+        if len(line.replace("URGENT", "").strip(" —-:*")) < 24:
+            nxt = next((clean(l) for l in lines[i + 1:] if l.strip()), "")
+            if nxt:
+                line = f"{line}: {nxt}"
+        return line if len(line) <= 240 else line[:239].rstrip() + "…"
     return None
 
 

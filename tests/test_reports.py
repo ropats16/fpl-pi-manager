@@ -195,6 +195,13 @@ class ScoutLogTest(unittest.TestCase):
         self.assertEqual(urgent_line(entry), "URGENT — Saka out 3 weeks (presser, 4 Sep).")
         self.assertIsNone(urgent_line(""))
 
+    def test_a_header_only_urgent_tag_carries_the_first_finding_under_it(self):
+        # First live run (4 Sep): the model wrote a section header, then bullets.
+        entry = ("### ts — scout (…)\n\n## GW3 sweep\n\n**URGENT — plan-touching**\n"
+                 "- **Szoboszlai:** likely bench (talksport, 4 Sep).\n- **Haaland (C):** fine.\n")
+        self.assertEqual(urgent_line(entry),
+                         "URGENT — plan-touching: Szoboszlai: likely bench (talksport, 4 Sep).")
+
 
 if __name__ == "__main__":
     unittest.main()
