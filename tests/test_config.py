@@ -1,11 +1,14 @@
 """Config loading — allowlist + secrets, creds-dir preferred over env (#8/#10)."""
 
+import io
 import os
 import tempfile
 import unittest
 
-from daemon.config import (DEFAULT_MODEL, HELPER_MODEL, AM_MODEL, load_config,
-                           load_helper_settings)
+from daemon.config import (DEFAULT_MAX_TOKENS, DEFAULT_MODEL, HELPER_MODEL, AM_MODEL,
+                           load_config, load_helper_settings)
+from daemon.runtime import build_stack
+from tests.fakes import FakeTransport
 
 
 class LoadConfigTest(unittest.TestCase):
@@ -23,6 +26,21 @@ class LoadConfigTest(unittest.TestCase):
             "TELEGRAM_BOT_TOKEN": "t", "OPENROUTER_API_KEY": "k",
         })
         self.assertEqual(cfg.model, DEFAULT_MODEL)
+
+    def test_gaffer_output_budget_defaults_to_8k_and_reaches_the_wire(self):
+        # 2026-09-04: the first six-report draft came back EMPTY — Sol spent the
+        # client's 1024-token default on hidden reasoning. Config owns the budget.
+        base = {"GAFFER_ALLOWLIST_USER_IDS": "1", "TELEGRAM_BOT_TOKEN": "t",
+                "OPENROUTER_API_KEY": "k"}
+        cfg = load_config(env=base)
+        self.assertEqual(cfg.max_tokens, DEFAULT_MAX_TOKENS)
+        self.assertEqual(DEFAULT_MAX_TOKENS, 8192)
+        self.assertEqual(load_config(env=dict(base, GAFFER_MAX_TOKENS="4096")).max_tokens, 4096)
+        self.assertEqual(load_config(env=dict(base, GAFFER_MAX_TOKENS="junk")).max_tokens, 8192)
+        fake = FakeTransport(llm_reply="x")
+        _, llm, _ = build_stack(cfg, fake, io.StringIO())
+        llm.complete([{"role": "user", "content": "q"}])
+        self.assertEqual(fake.llm_requests[0]["max_tokens"], 8192)
 
     def test_credentials_directory_takes_precedence_over_env(self):
         with tempfile.TemporaryDirectory() as d:

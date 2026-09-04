@@ -128,13 +128,13 @@ class LLM:
         message = choice.get("message") or {}
         usage = data.get("usage") or {}
         cost = estimate_cost(model, usage, self._prices)
-        self._account(model, usage, cost, role)
+        self._account(model, usage, cost, role, choice.get("finish_reason"))
         return Reply(content=message.get("content") or "",
                      tool_calls=_parse_tool_calls(message), usage=usage,
                      message=message, finish_reason=choice.get("finish_reason"),
                      cost_usd=cost)
 
-    def _account(self, model, usage, cost, role):
+    def _account(self, model, usage, cost, role, finish_reason=None):
         p = usage.get("prompt_tokens") or 0
         c = usage.get("completion_tokens") or 0
         self.calls += 1
@@ -151,7 +151,10 @@ class LLM:
                                model=model, prompt_tokens=p, completion_tokens=c,
                                cost_usd=None if cost is None else round(cost, 6),
                                reported_cost_usd=(reported if isinstance(reported, (int, float))
-                                                  else None))
+                                                  else None),
+                               # "length" = the output budget ran out (a reasoning
+                               # model may then return NO visible text).
+                               finish_reason=finish_reason)
 
     def add_cost(self, usd):
         """Fold a non-token charge (the web-plugin search fee) into the running
