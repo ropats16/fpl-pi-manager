@@ -58,9 +58,12 @@ class FreeTransfersTest(unittest.TestCase):
     def test_a_hit_never_goes_below_one(self):
         self.assertEqual(free_transfers_entering(self._h([0, 3]), 3), 1)
 
-    def test_wildcard_and_free_hit_do_not_spend_the_roll(self):
-        self.assertEqual(free_transfers_entering(self._h([0, 0, 8], chips=(("wildcard", 3),)), 4), 3)
-        self.assertEqual(free_transfers_entering(self._h([0, 0, 8], chips=(("freehit", 3),)), 4), 3)
+    def test_wildcard_and_free_hit_freeze_the_count(self):
+        # FPL's example: 4 saved, Free Hit played, still 4 the next GW — a chip
+        # week neither spends nor adds a free transfer.
+        self.assertEqual(free_transfers_entering(self._h([0, 0, 8], chips=(("wildcard", 3),)), 4), 2)
+        self.assertEqual(free_transfers_entering(self._h([0, 0, 8], chips=(("freehit", 3),)), 4), 2)
+        self.assertEqual(free_transfers_entering(self._h([0, 0, 0, 0, 9], chips=(("freehit", 5),)), 6), 4)
 
     def test_entering_gw1_or_gw2_is_one_and_missing_history_is_tolerated(self):
         self.assertEqual(free_transfers_entering(self._h([]), 1), 1)

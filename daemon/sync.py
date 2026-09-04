@@ -5,7 +5,7 @@ Why: after GW2 the squad pull + gameweek roll were a manual post-deadline
 step (`season_state.py pull-squad` / `advance-gw`) that never ran; every brief
 until 2026-09-04 was written from the GW1 squad. `SeasonSync.ensure(N)` brings
 the state to gameweek N — squad = the 15 the entry actually fielded in N-1
-(public picks endpoint), bank from the entry history, free transfers derived
+(public picks endpoint, whose entry_history carries the bank), free transfers derived
 from the entry's transfer history, current_gw = N — and is a no-op when the
 state is already at or past N. Two callers: the post-GW review wake right
 after a gameweek settles (target = settled + 1) and the draft wake before it
@@ -28,8 +28,9 @@ _NO_SPEND_CHIPS = ("wildcard", "freehit")
 def free_transfers_entering(history, target_gw):
     """Free transfers available in `target_gw`, replayed from the entry's
     `/history/` payload: 1 after GW1, then each GW `min(5, max(ft - used, 0)
-    + 1)`; a wildcard/free-hit GW spends nothing. GWs missing from the
-    history count as no transfers made (a roll)."""
+    + 1)`; a wildcard/free-hit GW freezes the count (nothing spent, nothing
+    gained — FPL's own example: 4 saved, Free Hit played, still 4 next GW).
+    GWs missing from the history count as no transfers made (a roll)."""
     used = {int(e.get("event", 0)): int(e.get("event_transfers") or 0)
             for e in (history or {}).get("current") or []}
     chip_gws = {int(c.get("event", 0)): str(c.get("name", "")).lower()
@@ -37,7 +38,7 @@ def free_transfers_entering(history, target_gw):
     ft = 1
     for gw in range(2, max(int(target_gw), 2)):
         if chip_gws.get(gw) in _NO_SPEND_CHIPS:
-            ft = min(FT_CAP, ft + 1)
+            ft = min(FT_CAP, ft)
         else:
             ft = min(FT_CAP, max(ft - used.get(gw, 0), 0) + 1)
     return ft

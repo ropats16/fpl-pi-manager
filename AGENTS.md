@@ -285,7 +285,7 @@ ids become the real FPL element ids; `--gw` defaults to the state's current game
 `daemon/sync.py` `SeasonSync.ensure(N)` rolls the state to gameweek N on its own — squad =
 the 15 fielded in N-1 (public picks endpoint, bank from `entry_history`), `free_transfers`
 replayed from `/entry/{id}/history/` (1 after GW1, then `min(5, max(ft − used, 0) + 1)`;
-wildcard/free-hit GWs spend nothing), `current_gw = N`, `active_chip = none`, an
+a wildcard/free-hit GW freezes the count), `current_gw = N`, `active_chip = none`, an
 `auto-sync` history entry; no-op (`season_sync status=current`) when already at/past N. Two
 callers: the post-GW review wake right after a GW is graded (`sync(settled + 1)`) and the
 brief wake before every draft (`sync(deadline gw)`, the stale-squad guard — a failed sync is a
