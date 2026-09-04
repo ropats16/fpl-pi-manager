@@ -143,7 +143,7 @@ def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
               logger, gw, reports_dir, now, projections_path=None,
               snapshot_dir=None, fanout=None):
     user_text = f"produce the GW{gw} draft deadline brief"
-    footer = ""
+    footer, fo = "", None
     if fanout is not None:
         # #56: analysts → internal plan → AM, then the draft below reads their
         # reports through the assembler. Helper trouble degrades into named
@@ -154,11 +154,13 @@ def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
             "transfers, hits, XI, (C)/(VC), chip and the reasoning; this is "
             "not sent to Rohit")[0], now=now)
         user_text += "\n\n" + fo.instructions()
-        footer = fo.footer()
     # If the block is missing even after the retry, the brief still goes out;
     # pending stays None so a `yes` can't approve half a protocol.
     plan, text, reply = _generate_plan(
         llm_complete, assembler_factory, user_text, logger, gw)
+    if fo is not None:
+        fanout.settle("draft-brief")     # the gaffer's own call counts too
+        footer = fo.footer(text)
     if footer:
         # The gaps are the daemon's words, appended after the model's — a
         # helper that never delivered is never silently "covered".
@@ -182,14 +184,22 @@ def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
 def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
               logger, gw, projections_path=None, snapshot_dir=None,
               fanout=None, now=None):
+    footer = ""
     if fanout is not None:
         # #56: one Scout delta pass lands in the GW's Scout log, which the
         # assembler inlines for the final generation. The carry-void logic
-        # below is untouched by it.
-        fanout.run_final_delta(gw, store.approved_plan or store.pending_plan, now=now)
+        # below is untouched by it; a failed/stubbed delta is named in the
+        # message footer, never silently "covered".
+        fo = fanout.run_final_delta(gw, store.approved_plan or store.pending_plan, now=now)
+        footer = fo.footer()
     new_plan, text, _ = _generate_plan(
         llm_complete, assembler_factory,
         f"final pre-deadline check for GW{gw}", logger, gw)
+    if fanout is not None:
+        fanout.settle("final-brief")
+
+    def tail(msg):
+        return f"{msg}\n\n{footer}" if footer else msg
     approved = store.approved_plan
     has_chip = bool(new_plan and new_plan.get("chip"))
     # The final is where the last real decision is made: freeze the projections
@@ -204,7 +214,7 @@ def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
         msg = (f"⚠ GW{gw} FINAL — no machine plan came back, so the approved "
                "plan can't be verified and will NOT auto-lock. Ask me to "
                "re-issue the plan, then reply yes.")
-        if not _send_all(telegram, allowlist, msg, logger, gw):
+        if not _send_all(telegram, allowlist, tail(msg), logger, gw):
             return 1
         store.void_carry(None)
         store.final_sent = True
@@ -217,7 +227,7 @@ def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
     if unchanged:
         msg = (f"GW{gw} FINAL — no change since your yes. Locking at T−30m. "
                "Reply STOP to hold.")
-        if not _send_all(telegram, allowlist, msg, logger, gw):
+        if not _send_all(telegram, allowlist, tail(msg), logger, gw):
             return 1
         store.phase = "locked"
         store.final_sent = True
@@ -228,7 +238,7 @@ def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
     # Changed, chip present, or nothing approved -> carry-void, fresh yes needed.
     marker = ("chip plan — fresh yes required" if has_chip
               else f"⚠ GW{gw} CHANGED — fresh yes required")
-    if not _send_all(telegram, allowlist, f"{marker}\n\n{text}", logger, gw):
+    if not _send_all(telegram, allowlist, tail(f"{marker}\n\n{text}"), logger, gw):
         return 1
     store.void_carry(new_plan)
     store.final_sent = True

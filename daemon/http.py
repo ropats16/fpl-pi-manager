@@ -107,8 +107,9 @@ class FakeTransport:
     #56 extension (the draft/final fan-out drives several models through one
     transport):
     - `llm_replies_by_model` maps a model id to its own reply queue; a non-plugin
-      chat call whose `payload["model"]` has a non-empty queue there pops from it,
-      else falls back to the shared `llm_replies`/`llm_reply` exactly as before.
+      chat call whose `payload["model"]` is listed there pops from that queue (a
+      drained queue raises — an extra call is a test failure, never masked);
+      models not listed fall back to the shared `llm_replies`/`llm_reply`.
     """
 
     def __init__(self, updates_batches=None, llm_reply="ok", llm_replies=None,
@@ -163,7 +164,13 @@ class FakeTransport:
                 return self._chat_response(self.search_reply)
             self.llm_requests.append(payload)
             queue = self.llm_replies_by_model.get(payload.get("model"))
-            if queue:
+            if queue is not None:
+                if not queue:
+                    # A drained per-model queue is a test bug, never a silent
+                    # fallback: the caller scripted exactly N calls for this model.
+                    raise AssertionError(f"no queued reply left for model "
+                                         f"{payload.get('model')!r} (call "
+                                         f"{len(self.llm_requests)})")
                 reply = queue.pop(0)
             elif self.llm_replies:
                 reply = self.llm_replies.pop(0)

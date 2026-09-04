@@ -139,10 +139,27 @@ class FanoutResult:
             lines.append("Helper gaps this wake — name them in Watch: " + "; ".join(gaps))
         return "\n".join(lines)
 
-    def footer(self):
-        """The daemon-written tail of the Telegram brief: "" when every helper
-        delivered, else the gaps (and the rail) — never left to the model."""
+    def dissent_line(self):
+        """The AM counter as one Dissent line (its first line, markdown
+        emphasis stripped, ≤240 chars) — the fallback the draft carries when
+        the model wrote no Dissent line of its own."""
+        if not self.am_available:
+            return f"Dissent — {AM_UNAVAILABLE}"
+        first = next((l.strip() for l in self.am_counter.splitlines() if l.strip()), "")
+        first = first.replace("**", "").replace("__", "")
+        if len(first) > 240:
+            first = first[:239].rstrip() + "…"
+        return f"Dissent — {first}"
+
+    def footer(self, text=None):
+        """The daemon-written tail of the Telegram message: "" when every
+        helper delivered (and, for a draft `text`, it carries a Dissent line),
+        else the missing Dissent (the AM counter, verbatim head), the gaps and
+        the rail — never left to the model. The final passes no text: it has
+        no Dissent slot."""
         parts = []
+        if text is not None and "dissent" not in text.lower():
+            parts.append(self.dissent_line())
         if self.rail:
             parts.append(f"⚠ {_rail_text(self.rail)} — remaining helpers stubbed")
         gaps = self.gaps()
@@ -175,18 +192,25 @@ class Fanout:
         self.ledger = ledger
         self.projections_path = projections_path
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self._ledgered = llm.cost_usd     # LLM total already folded into the ledger
 
     # --- ledger + rails -------------------------------------------------------------
 
     def _mode(self):
         return self.ledger.mode(self.clock()) if self.ledger is not None else "full"
 
-    def _settle(self, res, rails):
-        """Fold this step's spend into the ledger (advisory, never raises)."""
-        spent = rails.used()["cost_usd"] - res.cost_usd
-        res.cost_usd += spent
+    def settle(self, source):
+        """Fold whatever the LLM spent since the last settle into the ledger
+        (advisory, never raises). The brief calls it after its own generation
+        so the gaffer's draft/final call is counted too. Returns the delta."""
+        spent = self.llm.cost_usd - self._ledgered
+        self._ledgered = self.llm.cost_usd
         if self.ledger is not None and spent > 0:
-            self.ledger.add(spent, self.clock(), source=f"{res.kind}-fanout")
+            self.ledger.add(spent, self.clock(), source=source)
+        return spent
+
+    def _settle(self, res):
+        res.cost_usd += self.settle(f"{res.kind}-fanout")
 
     def _writer(self, role, gw):
         return ReportWriter(self.reports_dir, gw, logger=self.logger,
@@ -242,7 +266,7 @@ class Fanout:
                        projections_path=self.projections_path, clock=self.clock,
                        search=search, fetch=fetch, task=task)
         res.results.append(r)
-        self._settle(res, rails)
+        self._settle(res)
         return r
 
     # --- the two wakes --------------------------------------------------------------
@@ -262,7 +286,7 @@ class Fanout:
         reply = internal_plan()
         _, res.plan_text = parse_plan(reply)
         append_decision_log(self.reports_dir, gw, "Internal plan (pre-AM)", reply, now=now)
-        self._settle(res, rails)
+        self._settle(res)
 
         am = self._step("am", gw, res, rails, task=_AM_TASK.format(gw=gw, plan=res.plan_text),
                         fetch=False, search=False, ledger_gated=False)

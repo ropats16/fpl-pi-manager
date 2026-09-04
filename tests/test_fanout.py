@@ -157,9 +157,10 @@ class DraftFanoutTest(FanoutHarness):
         self.assertIn("## Deadline brief", log)
         self.assertIn("held:", log)
         # Spend reached the ledger and the log.
-        self.assertGreater(Ledger(self.ledger_path).total(_dt(DRAFT_NOW)), 0)
         (done,) = self._events("fanout_done")
         self.assertGreater(done["cost_usd"], 0)
+        # The ledger holds the helpers + plan + AM AND the draft call itself.
+        self.assertGreater(Ledger(self.ledger_path).total(_dt(DRAFT_NOW)), done["cost_usd"])
         self.assertEqual(done["rail"], None)
         self.assertEqual(done["mode"], "full")
 
@@ -225,6 +226,26 @@ class DraftFanoutTest(FanoutHarness):
         self.assertIn("Helper gaps: fixtures — empty report", t.sent[0]["text"])
         self.assertIn("fixtures — empty report", t.llm_requests[-1]["messages"][-1]["content"])
 
+    def test_every_rail_stubs_the_rest_through_the_wake(self):
+        for rail, limits in (("calls", {"calls": 1}), ("tokens", {"tokens": 1}),
+                             ("minutes", {"minutes": 0.001})):
+            with self.subTest(rail=rail):
+                self.setUp()
+                rc, t, llm = self._run(DRAFT_NOW, self._transport(), rails=limits)
+                self.assertEqual(rc, 0)
+                self.assertEqual(self._events("rail_hit")[0]["rail"], rail)
+                self.assertIn(f"⚠ wake rail {rail} crossed", t.sent[0]["text"])
+                self.assertIn("Helper gaps:", t.sent[0]["text"])
+                self.assertEqual(self.store.load().pending_plan, PLAN)
+
+    def test_a_draft_without_a_dissent_line_gets_the_am_counter_appended(self):
+        bare = "GW2 draft — roll FT, (C) Haaland.\n\n```plan\n" + json.dumps(PLAN) + "\n```"
+        rc, t, llm = self._run(DRAFT_NOW, self._transport(gaffer=[INTERNAL, bare]))
+        self.assertEqual(rc, 0)
+        (sent,) = t.sent
+        self.assertIn(f"Dissent — Counter: {COUNTER} — Saka blanked", sent["text"])
+        self.assertNotIn("**", sent["text"].split("Dissent — ")[1].splitlines()[0])
+
     def test_rerun_keeps_existing_reports_and_buys_no_helper_call_twice(self):
         t = self._transport(gaffer=[INTERNAL, INTERNAL])
         fanout, _, llm, _ = self._fanout(t)
@@ -257,6 +278,21 @@ class FinalDeltaTest(FanoutHarness):
         self.assertIn("URGENT: Saka doubtful", t.llm_requests[1]["messages"][0]["content"])
         self.assertIn("no change since your yes", t.sent[0]["text"])
         self.assertEqual(self.store.load().phase, "locked")
+
+
+    def test_failed_scout_delta_is_named_in_the_final_footer(self):
+        self.store.reset_for(2)
+        self.store.set_pending(2, PLAN)
+        self.store.approve()
+        self.store.draft_sent = True
+        self.store.save()
+        t = FakeTransport(llm_replies_by_model={FLASH: [""], GAFFER: [FINAL]})
+        rc, t, llm = self._run(FINAL_NOW, t)
+        self.assertEqual(rc, 0)
+        self.assertIn("no change since your yes", t.sent[0]["text"])
+        self.assertIn("⚠ Helper gaps: scout — empty report", t.sent[0]["text"])
+        self.assertNotIn("Dissent", t.sent[0]["text"])
+        self.assertIn("status failed", self._file("scout-log.md"))
 
 
 class WakeRailsTest(unittest.TestCase):

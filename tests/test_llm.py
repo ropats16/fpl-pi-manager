@@ -151,8 +151,11 @@ class PerModelRepliesTest(unittest.TestCase):
         llm = LLM(api_key="K", transport=fake)
         self.assertEqual(self._q(llm, "model-a"), "A1")
         self.assertEqual(self._q(llm, "model-a"), "A2")
-        self.assertEqual(self._q(llm, "model-a"), "SHARED")   # queue drained
         self.assertEqual(self._q(llm, "model-b"), "SHARED")   # never in the map
+        # A drained per-model queue is loud: an extra call is a test bug, never
+        # masked by the shared fallback.
+        with self.assertRaises(AssertionError):
+            self._q(llm, "model-a")
 
     def test_absent_model_falls_back_to_shared_llm_replies(self):
         fake = FakeTransport(llm_replies=["S1", "S2"],

@@ -190,11 +190,11 @@ gaffer and the AM still run (`GAFFER_LEDGER_SEARCH_OFF_USD/HELPERS_OFF_USD`). Ev
 spend is added to the ledger as it happens; `daemon helper` records its run too and obeys
 search-off. **Degrade, never abort:** a helper failure is a stub and a named gap; the
 daemon appends its own `⚠ Helper gaps: …` (and `⚠ wake rail …`) footer to the Telegram
-draft — the gaps are never left to the model to mention; an AM failure makes the Dissent
+draft (and, when the model wrote no Dissent line, the AM counter's first line as `Dissent — …`) — the gaps are never left to the model to mention; the final's message carries the same footer for a failed Scout delta; an AM failure makes the Dissent
 instruction "AM unavailable" and the footer says so; only the gaffer's own calls raise into
 the brief's existing retry-then-alert path, and a retried draft keeps every report already
 written (`helper_skipped cause=exists`, nothing re-bought). The Scout's writer path is now
-the append-only `scout-log.md` (newest first, per-entry cap; the #57 seam). `run_brief(...,
+the append-only `scout-log.md` (newest first, per-entry cap, flock'd read-modify-write so the daily Scout and a final delta cannot clobber each other; the #57 seam). `run_brief(...,
 fanout=None)` keeps the single-call brief for the protocol tests. Selftest runs one draft
 wake offline (four flash analysts, Sol plan, Qwen AM, Sol draft) and prints reports
 written, call order, prompt tokens, cost, rail/ledger status and PASS/FAIL; harness is

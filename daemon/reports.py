@@ -15,6 +15,7 @@ The Scout's append-only `scout-log.md` is the one exception to write-once and
 lands with the Scout timer (#57) on this same writer.
 """
 
+import fcntl
 import os
 
 from daemon.config import HELPER_ROLES
@@ -170,16 +171,22 @@ class ReportWriter:
                  f"status {h.get('status', 'n/a')}; coverage {h.get('coverage', 'n/a')})"
                  f"\n\n{self._cap('scout', body)}\n")
         top = f"# Scout log — GW{self.gw:02d}\n"
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                existing = f.read()
-            nl = existing.find("\n")           # drop the single top header line
-            rest = existing[nl + 1:] if nl != -1 else ""
+        os.makedirs(self.folder, exist_ok=True)
+        # Two writers can overlap (the #57 daily Scout vs the final delta): the
+        # read-modify-write holds an exclusive lock so neither entry is lost.
+        with open(path + ".lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            existing = ""
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    existing = f.read()
+            if existing.startswith("# Scout log"):
+                rest = existing[existing.find("\n") + 1:]     # under our header
+            else:
+                rest = existing                               # keep a foreign top line
             text = top + "\n" + entry + rest
-        else:
-            text = top + "\n" + entry
-        out = self._atomic_write(path, text)
-        entries = text.count(" — scout (")
+            out = self._atomic_write(path, text)
+        entries = text.count("\n### ") + text.startswith("### ")
         self._log("report_appended", role="scout", path=out, entries=entries)
         return out
 
