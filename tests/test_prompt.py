@@ -20,7 +20,8 @@ from daemon.prompt import (
 )
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATE = os.path.join(HERE, "season-state.json")
+# Frozen GW1 fixture, not the tracked root state (rolled to GW3 on the Pi).
+STATE = os.path.join(HERE, "fixtures", "season-state.json")
 PROJ = os.path.join(HERE, "fixtures", "projections-sample.csv")
 AGENT = os.path.join(HERE, "agent")
 

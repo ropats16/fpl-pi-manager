@@ -75,7 +75,8 @@ class SeasonSyncTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="sync-")
         self.state_path = os.path.join(self.tmp, "season-state.json")
-        shutil.copy(os.path.join(REPO_ROOT, "season-state.json"), self.state_path)
+        shutil.copy(os.path.join(REPO_ROOT, "fixtures", "season-state.json"),
+                    self.state_path)
         self.logbuf = io.StringIO()
         self.calls = []
 
@@ -158,7 +159,8 @@ class SyncCmdTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="sync-cmd-")
         self.state_path = os.path.join(self.tmp, "season-state.json")
-        shutil.copy(os.path.join(REPO_ROOT, "season-state.json"), self.state_path)
+        shutil.copy(os.path.join(REPO_ROOT, "fixtures", "season-state.json"),
+                    self.state_path)
         self.env = {"GAFFER_ALLOWLIST_USER_IDS": "42", "TELEGRAM_BOT_TOKEN": "TT",
                     "OPENROUTER_API_KEY": "KK", "GAFFER_STATE_PATH": self.state_path,
                     "FPL_ENTRY_ID": "2928517"}
