@@ -25,6 +25,7 @@ interface; helper code never changes.
 """
 
 import html as _html
+import json as _json
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -114,6 +115,7 @@ class Fetcher:
         self._max_tokens = max_tokens
         self._headers = headers or {"User-Agent": "fpl-gaffer/0.1 (personal, non-commercial)"}
         self._cache = {}
+        self._json_cache = {}     # untruncated JSON payloads (fetch_json), per wake
         self.calls = 0            # tool invocations (the per-helper ceiling counts these)
         self.requests_made = 0    # real requests (cache hits excluded)
         self.role = None          # set by the loop for log attribution
@@ -187,6 +189,40 @@ class Fetcher:
         self._cache[url] = text
         self._log("fetch", url=url, cached=False, chars=len(text))
         return text
+
+    def fetch_json(self, url):
+        """GET an allowlisted URL and return its parsed JSON payload, untruncated
+        and cached per wake. For structured callers that need the whole document,
+        not the ~8k-token text `fetch` returns — the gaffer's `fpl_lookup` reading
+        the public FPL bootstrap (spec §2). GET-only, allowlist-checked, no
+        redirect-follow; raises ValueError (allowlist / HTTP / parse) so the tool
+        can turn it into helper-safe text. Does not count against the fetch ceiling."""
+        url = (url or "").strip()
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            parts = None
+        if (parts is None or parts.scheme not in ("http", "https")
+                or not _host_allowed(parts.hostname, self._allowlist)):
+            host = (parts.hostname if parts else None) or url[:80] or "(empty)"
+            self._log("fetch_refused", url=url, host=host)
+            raise ValueError(f"{host} is not on the domain allowlist")
+        if url in self._json_cache:
+            self._log("fetch", url=url, cached=True, json=True)
+            return self._json_cache[url]
+        resp = self._transport.request("GET", url, self._headers, None)
+        self.requests_made += 1
+        if resp.status != 200:
+            self._log("fetch_error", url=url, error=f"http_{resp.status}")
+            raise ValueError(f"HTTP {resp.status} from {parts.hostname}")
+        try:
+            data = _json.loads(resp.body.decode("utf-8", errors="replace"))
+        except ValueError as e:
+            self._log("fetch_error", url=url, error=f"json: {e}"[:200])
+            raise ValueError(f"not JSON from {parts.hostname}")
+        self._json_cache[url] = data
+        self._log("fetch", url=url, cached=False, json=True)
+        return data
 
 
 FETCH_TOOL = {"type": "function", "function": {

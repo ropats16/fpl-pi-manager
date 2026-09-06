@@ -230,6 +230,29 @@ class ReportWriter:
                   entries=len(scout_entries(text)))
         return out
 
+    def append_section(self, role, section):
+        """Append a section to a role's report, creating the file if absent
+        (spec §2, the gaffer's `ask_helper`). Write-once guards a fan-out
+        OVERWRITE of `<role>.md`; an append is allowed — the Q&A the gaffer asked
+        for is added under the report it already read. ACL'd inside the GW folder,
+        atomic, flock'd so a concurrent writer never loses an entry."""
+        path = self.path_for(role)
+        if not self._inside_folder(path):
+            self._log("report_refused", reason="outside_gw_folder", path=path)
+            raise ReportRefused(f"refused: {path} is outside {self.folder}")
+        os.makedirs(self.folder, exist_ok=True)
+        block = section.rstrip() + "\n"
+        with open(path + ".lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            existing = ""
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    existing = f.read()
+            text = (existing.rstrip() + "\n\n" if existing.strip() else "") + block
+            out = self._atomic_write(path, text)
+        self._log("report_appended", role=role, path=out)
+        return out
+
     def stub(self, role, reason, header):
         """A failed helper's file: names the failure, declares no coverage."""
         h = dict(header or {})
