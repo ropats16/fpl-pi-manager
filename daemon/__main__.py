@@ -27,6 +27,7 @@ from daemon.ledger import Ledger
 from daemon.llm import DEFAULT_BASE_URL
 from daemon.logging_setup import StructuredLogger
 from daemon.loop import poll_once, run
+from daemon.pipeline import refresh_projections
 from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
 from daemon.propose import FakeGitHost, Proposal, make_proposer, run_propose
@@ -504,7 +505,42 @@ def run_sync_cmd(args, env=None, transport=None, out=None, fetch_events=None,
     return 1 if res.get("status") == "error" else 0
 
 
-def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None, sync=None):
+def _refresh_for(env, logger, runner=None, clock=None):
+    """The #78 refresh bound to this wake: `data/projections.csv` under the
+    data dir, the pipeline scripts at REPO_ROOT, never raises. Tests keep it
+    inert by pointing GAFFER_DATA_DIR at a temp dir (the refresh refuses a
+    data dir that is not repo_root/data before any subprocess) or by injecting
+    `refresh=`; the suite is tripwired for that (never a real fork)."""
+    # The pipeline scripts live at the repo root; GAFFER_REPO_ROOT relocates
+    # them (a dev/test seam — the refresh insists data_dir == repo_root/data).
+    repo_root = env.get("GAFFER_REPO_ROOT", REPO_ROOT)
+
+    def refresh():
+        return refresh_projections(repo_root, _data_dir(env), logger,
+                                   runner=runner, clock=clock)
+    return refresh
+
+
+def run_refresh_cmd(args, env=None, transport=None, out=None, runner=None, clock=None):
+    """`daemon refresh` — re-run the math pipeline by hand when projections.csv
+    is stale (#78; the brief and review wakes do the same on their own). Prints
+    one `refresh: status=… age=…h rows=…` line; exit 1 on error."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    _, _, logger = build_stack(cfg, transport, out)
+    res = _refresh_for(env, logger, runner=runner, clock=clock)()
+    age = res.get("age_hours")
+    out.write(f"refresh: status={res.get('status')} "
+              f"age={'none' if age is None else f'{age:.1f}h'} rows={res.get('rows')}"
+              + (f" reason={res.get('reason')}" if res.get("status") == "error" else "")
+              + "\n")
+    return 1 if res.get("status") == "error" else 0
+
+
+def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None, sync=None,
+                  refresh=None):
     """`daemon brief` — the timer-driven deadline-brief wake (#18). Unlike the
     watch, the brief thinks: it loads the full config (the LLM key), assembles a
     grounded prompt, and on a draft tick fans out (#56: four analysts, the
@@ -517,6 +553,9 @@ def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None, sync
     cfg = load_config(env)
     transport = UrllibTransport() if transport is None else transport
     telegram, llm, logger = build_stack(cfg, transport, out)
+    # #78: projections must be current before anything thinks on them. Never
+    # raises; a failed refresh is logged and the wake proceeds on the old CSV.
+    (_refresh_for(env, logger) if refresh is None else refresh)()
 
     approval_path = _approval_state_path(env)
     reports_dir = _reports_dir(env)
@@ -566,7 +605,7 @@ def _resolve_entry_id(env, state_path):
 
 
 def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
-                   fetch_actuals=None, now=None, sync=None):
+                   fetch_actuals=None, now=None, sync=None, refresh=None):
     """`daemon review` — the timer-driven post-GW review wake (#21). Like the
     brief it thinks (full config incl. the LLM key), but it is even cheaper day
     to day: a bare events check that spends tokens ONCE per finished gameweek and
@@ -580,6 +619,7 @@ def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
     cfg = load_config(env)
     transport = UrllibTransport() if transport is None else transport
     telegram, llm, logger = build_stack(cfg, transport, out)
+    (_refresh_for(env, logger) if refresh is None else refresh)()   # #78, see brief
 
     state_path = _state_path(env)
     reports_dir = _reports_dir(env)
@@ -1146,6 +1186,8 @@ def main(argv):
         return run_scout_cmd(argv[2:])
     if len(argv) > 1 and argv[1] == "sync":
         return run_sync_cmd(argv[2:])
+    if len(argv) > 1 and argv[1] == "refresh":
+        return run_refresh_cmd(argv[2:])
     return run_daemon()
 
 
