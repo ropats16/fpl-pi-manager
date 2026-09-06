@@ -247,6 +247,53 @@ class CommissionTest(unittest.TestCase):
         self.assertIsNone(start_pending_build(builds, FakeTelegram(), 42,
                                               _logger()[0], now=NOW))
 
+    # 2026-09-06: issues #78/#79 were opened by hand (gh), not by a gaffer build
+    # block, so `build #78` hit "no pending build" — Rohit's explicit `build #N`
+    # for any open issue on the host is authorization enough (one at a time).
+    def test_start_named_open_issue_with_nothing_pending_spawns(self):
+        store, host = _store(), FakeGitHost()
+        n, _ = host.open_issue("Refresh projections", "spec…", labels=["gaffer", "build"])
+        spawned = []
+        builds = BuildGate(store, host, "/tmp", spawn=lambda k, d: spawned.append(k) or 7)
+        logger, buf = _logger()
+        tg = FakeTelegram()
+        self.assertTrue(start_pending_build(builds, tg, 42, logger, now=NOW, number=n))
+        self.assertEqual(spawned, [n])
+        self.assertEqual(store.running_build["issue"], n)
+        self.assertIn(f"build #{n} started", tg.sent[0]["text"])
+        self.assertEqual(_events(buf)[-1]["event"], "build_started")
+
+    def test_start_unknown_issue_is_refused_without_a_spawn(self):
+        store, host = _store(), FakeGitHost()
+        spawned = []
+        builds = BuildGate(store, host, "/tmp", spawn=lambda k, d: spawned.append(k) or 7)
+        tg = FakeTelegram()
+        self.assertTrue(start_pending_build(builds, tg, 42, _logger()[0], now=NOW,
+                                            number=404))
+        self.assertIn("no such issue #404", tg.sent[0]["text"])
+        self.assertEqual(spawned, [])
+        self.assertIsNone(store.running_build)
+
+    def test_start_named_issue_without_a_host_says_so(self):
+        store = _store()
+        builds = BuildGate(store, None, "/tmp", spawn=lambda *a: 1)
+        tg = FakeTelegram()
+        self.assertTrue(start_pending_build(builds, tg, 42, _logger()[0], now=NOW,
+                                            number=5))
+        self.assertIn("GitHub token", tg.sent[0]["text"])
+
+    def test_named_issue_never_bypasses_a_different_pending_build(self):
+        store, host = _store(), FakeGitHost()
+        host.open_issue("other", "b")                       # #1 exists on the host
+        builds = BuildGate(store, host, "/tmp", spawn=lambda *a: 1)
+        logger, _ = _logger()
+        req, _ = parse_build("```build\nticket: 42\ntitle: fix\n---\nbody\n```")
+        commission_build(builds, req, logger, now=NOW)      # #42 pending
+        tg = FakeTelegram()
+        self.assertTrue(start_pending_build(builds, tg, 42, logger, now=NOW, number=1))
+        self.assertIn("no pending build #1", tg.sent[0]["text"])
+        self.assertEqual(store.pending_build["issue"], 42)
+
     def test_start_while_running_refuses(self):
         store, host = _store(), FakeGitHost()
         spawned = []

@@ -291,7 +291,11 @@ explicit word.
 The gate is deterministic daemon code in `loop.process_message`, **after** the
 plan gate and before any model call: `build #N` / `build` spawns
 `python3 -m daemon build N` detached (`start_new_session`, stdout/stderr →
-`data/work/build-N.log`) and flips `running_build`; a start while one is running
+`data/work/build-N.log`) and flips `running_build`. `build #N` with nothing
+queued starts any issue the host knows (hand-opened with `gh`, or via the
+gaffer's `open_ticket` tool) — Rohit naming it is the authorization; an unknown
+number gets `⛔ no such issue #N`, and a different pending build is never
+bypassed (`⛔ no pending build #N`). A start while one is running
 is refused (`⛔ build #M running — wait or "cancel build"`); `cancel build`
 clears the pending build and kills a running one's process group. One pending,
 one running, at a time; merge is never automatic. A pull-reload restart kills a
@@ -307,6 +311,18 @@ everything else (`deploy/`, `.github/`, `season-state.json`, `agent/memory/`,
 The git host gains `open_issue` / `issue_status` / `issue_body` / `pr_status`
 (via `gh`, token only in the child env, scrubbed). Harness is `tests/test_build.py`
 + `tests/test_build_loop.py` + `tests/test_build_cmd.py`.
+
+**Daily review loop (no terminal needed in between).** The Pi builds on its own:
+Rohit says `build #N` on Telegram → the engineer pushes `gaffer/build-N` and
+opens the PR → the receipt lands on Telegram. Once a day a Claude Code session
+reviews and merges: `gh pr list --search "head:gaffer/"` lists the engineer's
+PRs; each gets the two-axis review (`/code-review` — Standards + Spec against
+the issue), a review comment, then `gh pr merge --squash` or a close with the
+reason. Every merge is picked up by the Pi's pull-reload within 15 min, which
+restarts the daemon and kills a running build — merge between builds, not
+during one (`data/work/` and `systemctl status fpl-gaffer` show what is live).
+Engineer PRs are never merged unreviewed: the first live build (#78 → PR #80)
+was green and empty.
 
 ### Engineer (build jobs) (spec §4–6)
 

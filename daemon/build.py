@@ -294,11 +294,27 @@ def start_pending_build(builds, telegram, chat_id, logger, now=None, number=0):
         store.clear_running_build()
     pending = store.pending_build
     if not pending:
-        return None
-    num = pending["issue"]
-    if number and number != num:
-        telegram.send_message(chat_id, f"⛔ no pending build #{number}")
-        return True
+        if not number:
+            return None                     # bare `build`, nothing queued: chat
+        # `build #N` with nothing queued: N is an issue opened by hand (gh, or
+        # the gaffer's open_ticket tool). Rohit naming it is the authorization;
+        # the host just has to know it (2026-09-06: #78/#79 were hand-opened).
+        if builds.host is None:
+            telegram.send_message(chat_id, NO_HOST_REPLY)
+            return True
+        try:
+            builds.host.issue_body(number)
+        except Exception as e:            # noqa: BLE001 — a lookup fail is a reply
+            logger.event("build_refused", issue=number,
+                         reason=f"{type(e).__name__}: {e}")
+            telegram.send_message(chat_id, f"⛔ no such issue #{number}")
+            return True
+        num = number
+    else:
+        num = pending["issue"]
+        if number and number != num:
+            telegram.send_message(chat_id, f"⛔ no pending build #{number}")
+            return True
     now = now or datetime.now(timezone.utc)
     pid = builds.spawn(num, builds.data_dir)
     store.run_build({"issue": num, "pid": pid,
