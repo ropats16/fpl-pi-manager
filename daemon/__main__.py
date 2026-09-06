@@ -27,6 +27,7 @@ from daemon.ledger import Ledger
 from daemon.llm import DEFAULT_BASE_URL
 from daemon.logging_setup import StructuredLogger
 from daemon.loop import poll_once, run
+from daemon.pipeline import refresh_projections
 from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
 from daemon.propose import FakeGitHost, Proposal, make_proposer, run_propose
@@ -506,9 +507,10 @@ def run_sync_cmd(args, env=None, transport=None, out=None, fetch_events=None,
 
 def _refresh_for(env, logger, runner=None, clock=None):
     """The #78 refresh bound to this wake: `data/projections.csv` under the
-    data dir, the pipeline scripts at REPO_ROOT, never raises."""
-    from daemon.pipeline import refresh_projections
-
+    data dir, the pipeline scripts at REPO_ROOT, never raises. Tests keep it
+    inert by pointing GAFFER_DATA_DIR at a temp dir (the refresh refuses a
+    data dir that is not repo_root/data before any subprocess) or by injecting
+    `refresh=`; the suite is tripwired for that (never a real fork)."""
     # The pipeline scripts live at the repo root; GAFFER_REPO_ROOT relocates
     # them (a dev/test seam — the refresh insists data_dir == repo_root/data).
     repo_root = env.get("GAFFER_REPO_ROOT", REPO_ROOT)

@@ -235,6 +235,11 @@ seam); `daemon refresh` runs it by hand and prints `refresh: status=… age=…h
 build until GW3 — every wake reasoned on stale numbers. First engineer-built module
 (issue #78, PR #85: engineer wrote module + tests, ran out of fix budget on the wiring;
 finished by hand). Harness `tests/test_pipeline.py` (fake runner, no subprocess).
+Rail: the refresh refuses a `data_dir` that is not `repo_root/data` before any
+subprocess (fpl_projections.py hard-codes `./data`), which is also what keeps
+every wake-cmd test inert — they point `GAFFER_DATA_DIR` at a temp dir or inject
+`refresh=`; `GAFFER_REPO_ROOT` is the matching dev/test seam. The pipeline child
+gets a minimal env (PATH/HOME/LANG only), never the service credentials.
 
 ### Daily Scout timer (#57)
 

@@ -57,8 +57,11 @@ def _tail(text, chars=200):
 
 
 def _default_runner(argv, cwd, timeout):
-    """The real subprocess.run, output captured so a failure can be named."""
-    return subprocess.run(argv, cwd=cwd, timeout=timeout,
+    """The real subprocess.run, output captured so a failure can be named. The
+    child gets a minimal env (like the engineer's test child): the pipeline
+    scripts need PATH and HOME only, never the service's credentials."""
+    env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "LC_ALL")}
+    return subprocess.run(argv, cwd=cwd, timeout=timeout, env=env,
                           capture_output=True, text=True)
 
 
