@@ -1,77 +1,45 @@
 import './styles.css';
+import * as THREE from 'three';
 
-type Player = { name: string; pos: string; club: string; points: number; captain?: boolean; vice?: boolean; bench?: number };
-type Event = { minute: string; label: string; detail: string; tone: 'good' | 'warn' | 'muted' };
-type Gameweek = { id: number; opponent: string; result: string; points: number; rank: string; captain: string; events: Event[] };
+type Player = { name: string; club: string; points: number; position: number; multiplier: number; captain?: boolean; vice?: boolean };
+type Gameweek = { id: number; points: number; total: number; rank: number; bench: number; captain: string; players: Player[]; events: string[] };
 
-const squad: Player[] = [
-  { name: 'Raya', pos: 'GKP', club: 'ARS', points: 6 }, { name: 'Gabriel', pos: 'DEF', club: 'ARS', points: 8 },
-  { name: 'Mitchell', pos: 'DEF', club: 'CRY', points: 2 }, { name: 'Shaw', pos: 'DEF', club: 'MUN', points: 1 },
-  { name: 'Bruno Fernandes', pos: 'MID', club: 'MUN', points: 12, vice: true }, { name: 'Mbeumo', pos: 'MID', club: 'MUN', points: 9 },
-  { name: 'Szoboszlai', pos: 'MID', club: 'LIV', points: 5 }, { name: 'Yates', pos: 'MID', club: 'NFO', points: 3 },
-  { name: 'Haaland', pos: 'FWD', club: 'MCI', points: 16, captain: true }, { name: 'Joao Pedro', pos: 'FWD', club: 'CHE', points: 7 },
-  { name: 'Calvert-Lewin', pos: 'FWD', club: 'LEE', points: 2 }, { name: 'Palmer', pos: 'GKP', club: 'IPS', points: 0, bench: 1 },
-  { name: 'Diop', pos: 'DEF', club: 'IPS', points: 1, bench: 2 }, { name: 'Hughes', pos: 'MID', club: 'CRY', points: 2, bench: 3 },
-  { name: 'van Ewijk', pos: 'DEF', club: 'COV', points: 1, bench: 4 },
-];
-
+const player = (name: string, club: string, points: number, position: number, multiplier = 1, flags: Partial<Player> = {}): Player => ({ name, club, points, position, multiplier, ...flags });
 const gameweeks: Gameweek[] = [
-  { id: 1, opponent: 'Coventry', result: 'W 3–0', points: 74, rank: '1.2m', captain: 'Haaland', events: [
-    { minute: '18′', label: 'Clean sheet', detail: 'Raya + Gabriel · ARS 2–0 COV', tone: 'good' },
-    { minute: '41′', label: 'Captain goal', detail: 'Haaland · 2× points secured', tone: 'good' },
-    { minute: '72′', label: 'Late assist', detail: 'Bruno Fernandes · MUN 2–1 FUL', tone: 'good' },
-    { minute: 'FT', label: 'Bench watch', detail: 'Hughes left 2 points unused', tone: 'warn' },
-  ] },
-  { id: 2, opponent: 'Fulham', result: 'D 1–1', points: 61, rank: '1.5m', captain: 'Bruno Fernandes', events: [
-    { minute: '09′', label: 'Early booking', detail: 'Shaw · yellow card', tone: 'warn' },
-    { minute: '55′', label: 'Assist', detail: 'Bruno Fernandes · set-piece delivery', tone: 'good' },
-    { minute: 'FT', label: 'Rank drift', detail: '61 points · 8 below safety', tone: 'muted' },
-  ] },
-  { id: 3, opponent: 'Wolves', result: 'W 2–1', points: 69, rank: '1.1m', captain: 'Haaland', events: [
-    { minute: '23′', label: 'Captain blank', detail: 'Haaland · 2 points', tone: 'warn' },
-    { minute: '67′', label: 'Goal', detail: 'Mbeumo · inside the box', tone: 'good' },
-    { minute: 'FT', label: 'Wild card', detail: 'No chip used · bank £0.0m', tone: 'muted' },
-  ] },
+  { id: 1, points: 43, total: 43, rank: 6382778, bench: 1, captain: 'Haaland', events: ['João Pedro returned 11 points', 'Haaland captain blanked on 2', 'Auto-sub: van Ewijk in for Diop'], players: [player('Raya','ARS',6,1),player('Gabriel','ARS',5,2),player('Mitchell','CRY',1,2),player('Shaw','MUN',1,2),player('B.Fernandes','MUN',2,3,1,{vice:true}),player('Szoboszlai','LIV',8,3),player('Mbeumo','MUN',2,3),player('Haaland','MCI',2,4,2,{captain:true}),player('Calvert-Lewin','LEE',1,4),player('João Pedro','CHE',11,4),player('Diop','IPS',2,2,0),player('Yates','NFO',0,3,0),player('Hughes','CRY',0,3,0),player('Palmer','IPS',0,1,0),player('van Ewijk','COV',1,2,0)] },
+  { id: 2, points: 111, total: 154, rank: 1630859, bench: 2, captain: 'B.Fernandes', events: ['B.Fernandes captain returned 46 points', 'Mbeumo added 11 points', '1 transfer made · no hit taken'], players: [player('Raya','ARS',6,1),player('Gabriel','ARS',8,2),player('Shaw','MUN',2,2),player('van Ewijk','COV',2,2),player('B.Fernandes','MUN',23,3,2,{captain:true}),player('Slater','HUL',2,3),player('Mbeumo','MUN',11,3),player('Szoboszlai','LIV',4,3),player('João Pedro','CHE',9,4),player('Haaland','MCI',13,4,1,{vice:true}),player('Calvert-Lewin','LEE',8,4),player('Palmer','IPS',0,1,0),player('Mitchell','CRY',0,2,0),player('Diop','IPS',2,2,0),player('Hughes','CRY',0,3,0)] },
+  { id: 3, points: 40, total: 194, rank: 1499855, bench: 7, captain: 'Haaland', events: ['Mitchell led the XI with 15 points', 'Haaland captain returned 18 points', '7 points left on the bench'], players: [player('Raya','ARS',0,1),player('Gabriel','ARS',0,2),player('Shaw','MUN',0,2),player('Mitchell','CRY',15,2),player('B.Fernandes','MUN',0,3,1,{vice:true}),player('Slater','HUL',3,3),player('Mbeumo','MUN',0,3),player('Szoboszlai','LIV',3,3),player('João Pedro','CHE',0,4),player('Haaland','MCI',9,4,2,{captain:true}),player('Calvert-Lewin','LEE',1,4),player('Palmer','IPS',0,1,0),player('van Ewijk','COV',3,2,0),player('Diop','IPS',3,2,0),player('Hughes','CRY',1,3,0)] },
 ];
 
 let selected = 0;
 const app = document.querySelector<HTMLDivElement>('#app')!;
-const initials = (name: string) => name.split(' ').map((part) => part[0]).join('').slice(0, 2);
-const scoreClass = (points: number) => points >= 10 ? 'score score--hot' : points <= 2 ? 'score score--quiet' : 'score';
+const fmt = (n: number) => n.toLocaleString('en-GB');
+const initials = (name: string) => name.split(' ').map((p) => p[0]).join('').slice(0, 2);
+const positionName = (position: number) => ['','GKP','DEF','MID','FWD'][position];
 
 function render(): void {
   const gw = gameweeks[selected];
-  const starters = squad.filter((player) => !player.bench);
-  const bench = squad.filter((player) => player.bench);
-  app.innerHTML = `
-    <main class="shell">
-      <header class="topbar">
-        <div class="brand"><span class="brand-mark">◆</span><div><p>FPL PI MANAGER</p><h1>Gaffer room</h1></div></div>
-        <div class="status"><span class="live-dot"></span><span>Snapshot mode</span><span class="status-divider"></span><span>2026 / 27</span></div>
-      </header>
-      <section class="hero-grid">
-        <div class="intro"><p class="eyebrow">THE SEASON ROOM</p><h2>Gameweek <em>${gw.id}</em><br />under the microscope.</h2><p class="lede">A quiet look at the calls, points and moments shaping the season.</p>
-          <div class="metrics"><div><span>LAST GW</span><strong>${gw.points}</strong><small>points</small></div><div><span>OVERALL RANK</span><strong>${gw.rank}</strong><small>↑ 140k places</small></div><div><span>NEXT DEADLINE</span><strong>2d 04h</strong><small>Fri · 17:30 UTC</small></div></div>
-        </div>
-        <div class="room" aria-label="3D dugout scene with the gaffer, pitch board and helper desks">
-          <div class="room-glow"></div><div class="back-wall"><span>GAFFER HQ</span></div><div class="desk desk--analyst"><i></i><b>SCOUT</b><small>watching fixtures</small></div><div class="desk desk--am"><i></i><b>AM</b><small>challenging plan</small></div>
-          <div class="gaffer"><div class="head"></div><div class="body"></div><span>GAFFER</span></div>
-          <div class="pitch-board"><div class="pitch-lines"></div><span>GW ${gw.id} · ${gw.result}</span><div class="pitch-dots"><i></i><i></i><i></i><i></i></div></div>
-          <div class="room-floor"></div>
-        </div>
-      </section>
-      <section class="workspace">
-        <div class="squad-card panel"><div class="panel-head"><div><p class="eyebrow">FIELD NOTES</p><h3>Starting XI</h3></div><span class="formation">3–4–3</span></div><div class="pitch-list">${starters.map(playerCard).join('')}</div><div class="bench-label"><span>BENCH</span><span>4 players</span></div><div class="bench-list">${bench.map(playerCard).join('')}</div></div>
-        <div class="events-card panel"><div class="panel-head"><div><p class="eyebrow">MATCH LOG · GW ${gw.id}</p><h3>What happened</h3></div><span class="result-badge">${gw.result}</span></div><div class="event-list">${gw.events.map(eventRow).join('')}</div><div class="callout"><span class="callout-icon">✦</span><div><b>Gaffer's read</b><p>${gw.id === 1 ? 'The armband paid off. A clean opening week with the spine delivering.' : gw.id === 2 ? 'A steady week, but the captaincy edge was left on the table.' : 'The points landed despite a quiet captain. Hold the nerve.'}</p></div></div></div>
-      </section>
-      <section class="history panel"><div class="panel-head"><div><p class="eyebrow">THE CAMPAIGN</p><h3>Gameweek performance</h3></div><span class="history-hint">Scroll to explore <span>→</span></span></div><div class="gw-strip" role="tablist" aria-label="Gameweek performance">${gameweeks.map((item, index) => `<button class="gw-tab ${index === selected ? 'is-selected' : ''}" role="tab" aria-selected="${index === selected}" data-gw="${index}"><span>GW ${item.id}</span><strong>${item.points}</strong><small>${item.result}</small><i style="height:${item.points}%"></i></button>`).join('')}</div><div class="carousel-controls"><button class="arrow" data-direction="-1" aria-label="Previous gameweek" ${selected === 0 ? 'disabled' : ''}>←</button><span>${selected + 1} / ${gameweeks.length}</span><button class="arrow" data-direction="1" aria-label="Next gameweek" ${selected === gameweeks.length - 1 ? 'disabled' : ''}>→</button></div></section>
-      <footer><span>READ-ONLY SNAPSHOT</span><span>Last synced from season-state.json · 04 Sep 2026</span><span>Telegram remains the approval surface</span></footer>
-    </main>`;
+  const starters = gw.players.filter((p) => p.multiplier > 0);
+  const bench = gw.players.filter((p) => p.multiplier === 0);
+  app.innerHTML = `<main class="viewport"><header class="topbar"><div class="brand"><span class="brand-mark">✦</span><div><span>FPL PI MANAGER</span><h1>GAFFER / CONTROL ROOM</h1></div></div><div class="status"><i></i> LIVE SNAPSHOT <b>2026 / 27</b></div></header><section class="dashboard"><div class="scene-panel"><div class="scene-copy"><span class="kicker">THE SEASON ROOM / 03</span><h2>Gameweek <strong>${gw.id}</strong></h2><p>${gw.points} points logged. Every decision, on the board.</p></div><div id="scene" class="three-scene" aria-label="Interactive 3D gaffer room"></div><div class="scene-legend"><span><i class="dot dot--gold"></i> GAFFER</span><span><i class="dot dot--green"></i> ANALYSTS</span><span><i class="dot dot--blue"></i> ACTIVE BOARD</span></div></div><aside class="side-panel"><div class="side-top"><span class="kicker">GAMEWEEK PERFORMANCE</span><span class="sync">SYNCED 04 SEP</span></div><div class="headline"><div><span>GW ${gw.id} SCORE</span><strong>${gw.points}</strong></div><div><span>OVERALL RANK</span><b>${fmt(gw.rank)}</b><small>${gw.id === 1 ? 'Opening rank' : '↑ rank improved'}</small></div></div><div class="history" role="tablist" aria-label="Select gameweek">${gameweeks.map((item, index) => `<button class="history-item ${index === selected ? 'is-active' : ''}" data-gw="${index}" role="tab" aria-selected="${index === selected}"><span>GW ${item.id}</span><strong>${item.points}</strong><small>${item.total} total</small><i style="height:${Math.max(16, item.points / 1.2)}%"></i></button>`).join('')}</div><div class="events"><div class="section-title"><span>KEY EVENTS</span><b>GW ${gw.id}</b></div>${gw.events.map((event, index) => `<div class="event"><span>0${index + 1}</span><p>${event}</p><i class="event-line"></i></div>`).join('')}</div><div class="state-row"><span>CAPTAIN <b>${gw.captain}</b></span><span>BENCH <b>${gw.bench} pts</b></span><span>FREE TRANSFERS <b>1</b></span></div></aside></section><section class="bottom"><div class="roster panel"><div class="panel-title"><span>FIELD / GW ${gw.id}</span><b>${starters.length} STARTERS</b></div><div class="players">${starters.map(playerCard).join('')}</div></div><div class="bench panel"><div class="panel-title"><span>BENCH WATCH</span><b>POINTS LEFT: ${gw.bench}</b></div><div class="bench-players">${bench.map(playerCard).join('')}</div></div></section><footer><span>READ-ONLY / TELEGRAM IS THE APPROVAL SURFACE</span><span>ENTRY 2928517 · FPL API HISTORY</span><div><button class="arrow" data-dir="-1" aria-label="Previous gameweek" ${selected === 0 ? 'disabled' : ''}>←</button><span>${selected + 1} / ${gameweeks.length}</span><button class="arrow" data-dir="1" aria-label="Next gameweek" ${selected === gameweeks.length - 1 ? 'disabled' : ''}>→</button></div></footer></main>`;
   app.querySelectorAll<HTMLButtonElement>('[data-gw]').forEach((button) => button.addEventListener('click', () => { selected = Number(button.dataset.gw); render(); }));
-  app.querySelectorAll<HTMLButtonElement>('[data-direction]').forEach((button) => button.addEventListener('click', () => { selected = Math.max(0, Math.min(gameweeks.length - 1, selected + Number(button.dataset.direction))); render(); }));
+  app.querySelectorAll<HTMLButtonElement>('[data-dir]').forEach((button) => button.addEventListener('click', () => { selected = Math.max(0, Math.min(gameweeks.length - 1, selected + Number(button.dataset.dir))); render(); }));
+  mountScene(document.querySelector<HTMLDivElement>('#scene')!);
 }
-
-function playerCard(player: Player): string { return `<div class="player ${player.bench ? 'player--bench' : ''}"><span class="avatar avatar--${player.pos.toLowerCase()}">${initials(player.name)}</span><span class="player-main"><b>${player.name}</b><small>${player.club} · ${player.pos}${player.captain ? ' · <mark>C</mark>' : player.vice ? ' · <mark>VC</mark>' : ''}</small></span><span class="${scoreClass(player.points)}">${player.points}</span></div>`; }
-function eventRow(event: Event): string { return `<div class="event"><span class="event-time">${event.minute}</span><span class="event-marker event-marker--${event.tone}"></span><span class="event-copy"><b>${event.label}</b><small>${event.detail}</small></span></div>`; }
-
+function playerCard(p: Player): string { return `<div class="player"><span class="avatar avatar--${positionName(p.position).toLowerCase()}">${initials(p.name)}</span><span><b>${p.name}</b><small>${p.club} · ${positionName(p.position)}${p.captain ? ' · C' : p.vice ? ' · VC' : ''}</small></span><strong class="player-points">${p.points * p.multiplier}</strong></div>`; }
+function mountScene(container: HTMLDivElement): void {
+  const scene = new THREE.Scene(); scene.background = new THREE.Color('#111a1c');
+  const camera = new THREE.PerspectiveCamera(38, container.clientWidth / container.clientHeight, .1, 100); camera.position.set(6, 5, 9); camera.lookAt(0, 1, 0);
+  const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(container.clientWidth, container.clientHeight); renderer.shadowMap.enabled = true; container.appendChild(renderer.domElement);
+  scene.add(new THREE.HemisphereLight('#d5e9d2', '#10201c', 2)); const key = new THREE.DirectionalLight('#f2bf6d', 5); key.position.set(3, 7, 5); key.castShadow = true; scene.add(key);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(14, 12), new THREE.MeshStandardMaterial({ color: '#192a25', roughness: .8 })); floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(14, 7, .25), new THREE.MeshStandardMaterial({ color: '#1d322d' })); wall.position.set(0, 3.5, -3); scene.add(wall);
+  const makeBox = (x: number, y: number, z: number, sx: number, sy: number, sz: number, color: string, emissive = '#000000') => { const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), new THREE.MeshStandardMaterial({ color, emissive, emissiveIntensity: 2 })); mesh.position.set(x, y, z); mesh.castShadow = true; scene.add(mesh); return mesh; };
+  makeBox(0, 1.55, -.9, 3.7, 2.2, .16, '#527e60'); makeBox(0, .38, -.9, 4.4, .18, .55, '#a17445');
+  for (const x of [-3.3, 3.3]) { makeBox(x, .8, -.8, 1.6, .18, 1.3, '#3b5747'); makeBox(x, 1.55, -1.2, .38, .8, .38, '#bd9c58', '#bd9c58'); }
+  const makeAgent = (x: number, z: number, color: string) => { const body = new THREE.Mesh(new THREE.CapsuleGeometry(.25, .62, 4, 8), new THREE.MeshStandardMaterial({ color })); body.position.set(x, .72, z); body.castShadow = true; scene.add(body); const head = new THREE.Mesh(new THREE.SphereGeometry(.22, 12, 12), new THREE.MeshStandardMaterial({ color: '#bd8c68' })); head.position.set(x, 1.3, z); scene.add(head); };
+  makeAgent(2.7, -1.4, '#638b72'); makeAgent(-3.3, -1.1, '#52739a'); makeAgent(0, 1.2, '#d19f53');
+  const animate = () => { renderer.render(scene, camera); requestAnimationFrame(animate); }; animate();
+  new ResizeObserver(() => { camera.aspect = container.clientWidth / container.clientHeight; camera.updateProjectionMatrix(); renderer.setSize(container.clientWidth, container.clientHeight); }).observe(container);
+}
 render();
