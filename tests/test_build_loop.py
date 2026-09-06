@@ -126,6 +126,22 @@ class BuildLoopTest(unittest.TestCase):
         self.assertEqual(fake.sent[0]["text"], "just chatting")
         self.assertEqual(self.spawned, [])
 
+    def test_build_number_for_a_hand_opened_issue_spawns_from_chat(self):
+        # Nothing queued; the issue exists on the host (opened with gh, not by a
+        # build block). `build #N` starts it with no model call.
+        n, _ = self.host.open_issue("Refresh projections", "spec", labels=["build"])
+        fake = self._run(f"build #{n}", "never", builds=self._builds())
+        self.assertEqual(fake.llm_requests, [])
+        self.assertEqual(self.spawned, [(n, self.tmp)])
+        self.assertIn(f"build #{n} started", fake.sent[0]["text"])
+        self.assertEqual(self.store.load().running_build["issue"], n)
+
+    def test_build_number_for_an_unknown_issue_is_refused_from_chat(self):
+        fake = self._run("build #404", "never", builds=self._builds())
+        self.assertEqual(fake.llm_requests, [])
+        self.assertEqual(self.spawned, [])
+        self.assertIn("no such issue #404", fake.sent[0]["text"])
+
     def test_bare_yes_only_approves_a_plan_never_a_build(self):
         # A pending build AND a pending plan: `yes` must approve the plan and
         # leave the build untouched (build approval is never a bare yes).

@@ -275,11 +275,16 @@ def commission_build(builds, request, logger, now=None):
 def start_pending_build(builds, telegram, chat_id, logger, now=None, number=0):
     """The `build` / `build #N` gate: spawn the single pending build. `number` is
     the N the user typed (0 for a bare `build`); a non-zero N that does not match
-    the pending build is refused, so `build #12` never starts a pending #13. A
-    running build whose pid is dead is treated as finished (cleared) before we
-    proceed — otherwise a completed build would block the next one forever.
-    Returns True when it replied, None when there is nothing to start (falls
-    through to the model)."""
+    the pending build is refused, so `build #12` never starts a pending #13. With
+    nothing pending, `build #N` starts any issue the host knows (hand-opened, or
+    the gaffer's open_ticket) — Rohit naming it is the authorization; the host
+    lookup is the gate's one slow path (a `gh` subprocess, SUBPROCESS_TIMEOUT):
+    a missing issue → `⛔ no such issue #N`, a host error/timeout → a `⚠` line
+    that says so (never "no such issue"). A running build whose pid is dead is
+    treated as finished (cleared) before we proceed — otherwise a completed build
+    would block the next one forever. Returns True when it replied, None when
+    there is nothing to start (a bare `build`, nothing queued: falls through to
+    the model)."""
     store = builds.store
     running = store.running_build
     if running:
@@ -294,11 +299,34 @@ def start_pending_build(builds, telegram, chat_id, logger, now=None, number=0):
         store.clear_running_build()
     pending = store.pending_build
     if not pending:
-        return None
-    num = pending["issue"]
-    if number and number != num:
-        telegram.send_message(chat_id, f"⛔ no pending build #{number}")
-        return True
+        if not number:
+            return None                     # bare `build`, nothing queued: chat
+        # `build #N` with nothing queued: N is an issue opened by hand (gh, or
+        # the gaffer's open_ticket tool). Rohit naming it is the authorization;
+        # the host just has to know it (2026-09-06: #78/#79 were hand-opened).
+        if builds.host is None:
+            telegram.send_message(chat_id, NO_HOST_REPLY)
+            return True
+        from daemon.propose import GitHostError   # local: propose imports build's ACL
+        try:
+            builds.host.issue_body(number)
+        except GitHostError as e:         # gh answered: the issue is not there
+            logger.event("build_refused", issue=number, reason=str(e)[:200])
+            telegram.send_message(chat_id, f"⛔ no such issue #{number}")
+            return True
+        except Exception as e:            # noqa: BLE001 — gh slow/offline is not "no issue"
+            logger.event("build_refused", issue=number,
+                         reason=f"lookup failed: {type(e).__name__}: {e}"[:200])
+            telegram.send_message(
+                chat_id, f"⚠ could not look up issue #{number} ({type(e).__name__}) "
+                         "— try again")
+            return True
+        num = number
+    else:
+        num = pending["issue"]
+        if number and number != num:
+            telegram.send_message(chat_id, f"⛔ no pending build #{number}")
+            return True
     now = now or datetime.now(timezone.utc)
     pid = builds.spawn(num, builds.data_dir)
     store.run_build({"issue": num, "pid": pid,
