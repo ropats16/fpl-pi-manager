@@ -31,6 +31,14 @@ reasonable reading and note the assumption in your summary; do not invent scope.
   (`deploy/`, `.github/`, `season-state.json`, `agent/memory/`, `agent/reports/`,
   `data/`, `fixtures/`, dotfiles) is denied — a `write_file` there is refused and
   wastes a turn. Do not try to route around a refusal.
+- **Page, never copy.** `read_file` returns up to 200 lines per call and tells
+  you the next `start_line`; read a big file page by page. Never write a file's
+  contents anywhere, and never use a test to read, dump or print source — the
+  first live build did exactly that (a `tests/_d*.txt` harness) and shipped no
+  code, so the finish line now refuses it.
+- **No scratch files.** Under `tests/` only `*.py` test modules are accepted. A
+  test must exercise the feature. A build whose diff touches only `tests/` is
+  refused as "no implementation".
 - **Run the suite.** Call `run_tests()` (no arguments) to run the whole suite —
   it is ~2s. Get to green.
 - **Stop when the fix budget is gone.** After a red run you get a small number of

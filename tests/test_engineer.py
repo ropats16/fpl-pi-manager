@@ -53,6 +53,21 @@ class _Base(unittest.TestCase):
                                       runner, self.logger, scrub=scrub)
         return {t.name: t for t in tools}, state
 
+    def _build(self, replies, test_runner, fix_turns=2):
+        """run_build end to end over a FakeGitHost clone of a tiny tree."""
+        host = FakeGitHost(url_base="https://github.com/x/y/pull/",
+                           clone_source=_small_src())
+        n, _ = host.open_issue("Add marker", "Create fpl_marker.py.",
+                               labels=["gaffer", "build"])
+        data_dir = tempfile.mkdtemp(prefix="eng-data-")
+        transport = FakeTransport(llm_replies=replies,
+                                  usage={"prompt_tokens": 1000, "completion_tokens": 100})
+        res = engineer.run_build(engineer.Issue(n, "Add marker", "Create fpl_marker.py."),
+                                 host, self._llm(transport), MODEL, CAPS, fix_turns,
+                                 data_dir, engineer.REPO_RULES, self.logger,
+                                 test_runner=test_runner)
+        return res, host, data_dir, n, transport
+
 
 # --- workspace ACL (spec §5) ----------------------------------------------------
 
@@ -179,20 +194,6 @@ class PrBodyTest(_Base):
 # --- run_build end to end -------------------------------------------------------
 
 class RunBuildTest(_Base):
-    def _build(self, replies, test_runner, fix_turns=2):
-        host = FakeGitHost(url_base="https://github.com/x/y/pull/",
-                           clone_source=_small_src())
-        n, _ = host.open_issue("Add marker", "Create fpl_marker.py.",
-                               labels=["gaffer", "build"])
-        data_dir = tempfile.mkdtemp(prefix="eng-data-")
-        transport = FakeTransport(llm_replies=replies,
-                                  usage={"prompt_tokens": 1000, "completion_tokens": 100})
-        res = engineer.run_build(engineer.Issue(n, "Add marker", "Create fpl_marker.py."),
-                                 host, self._llm(transport), MODEL, CAPS, fix_turns,
-                                 data_dir, engineer.REPO_RULES, self.logger,
-                                 test_runner=test_runner)
-        return res, host, data_dir, n, transport
-
     def test_green_stages_only_the_diff_and_opens_a_closing_pr(self):
         replies = [
             tool_call_message("write_file",
@@ -282,6 +283,109 @@ class RunBuildTest(_Base):
                                  self.logger, test_runner=lambda w, p: (True, "OK"))
         self.assertEqual(res.status, "error")
         self.assertIn("clone failed", res.reason)
+
+
+# --- hardening after live build #78 (PR #80, 2026-09-06) ---------------------------
+# The first live engineer never wrote an implementation: it used run_tests as a
+# file-reading harness (an atexit dump of daemon/brief.py into tests/_d*.txt, to
+# dodge the read_file cap) and shipped only that harness. Three rails close it.
+
+
+class PagedReadTest(_Base):
+    def _ws(self, lines=300):
+        ws = tempfile.mkdtemp(prefix="eng-ws-")
+        os.makedirs(os.path.join(ws, "daemon"))
+        with open(os.path.join(ws, "daemon", "big.py"), "w") as f:
+            f.write("".join(f"line{i}\n" for i in range(1, lines + 1)))
+        return ws
+
+    def test_default_read_is_the_first_page_with_a_continuation_hint(self):
+        tools, _ = self._tools(self._ws())
+        out = tools["read_file"].fn(path="daemon/big.py")
+        self.assertTrue(out.startswith("line1\n"))
+        self.assertIn(f"line{engineer.READ_MAX_LINES}\n", out)
+        self.assertNotIn(f"line{engineer.READ_MAX_LINES + 1}\n", out)
+        self.assertIn(f"start_line={engineer.READ_MAX_LINES + 1}", out)   # how to page
+        self.assertIn("of 300", out)
+
+    def test_start_line_and_max_lines_page_through_a_big_file(self):
+        tools, _ = self._tools(self._ws())
+        out = tools["read_file"].fn(path="daemon/big.py", start_line=201, max_lines=50)
+        self.assertTrue(out.startswith("line201\n"))
+        self.assertIn("line250\n", out)
+        self.assertNotIn("line251\n", out)
+        self.assertIn("start_line=251", out)
+        last = tools["read_file"].fn(path="daemon/big.py", start_line=251)
+        self.assertIn("line300\n", last)
+        self.assertNotIn("start_line=", last)                            # no more pages
+        self.assertIn("past the end", tools["read_file"].fn(path="daemon/big.py",
+                                                            start_line=400))
+
+    def test_budget_cut_page_reports_only_the_lines_it_emitted(self):
+        ws = tempfile.mkdtemp(prefix="eng-ws-")
+        os.makedirs(os.path.join(ws, "daemon"))
+        wide = "x" * 3000                                  # ~750 tokens per line
+        with open(os.path.join(ws, "daemon", "wide.py"), "w") as f:
+            f.write("".join(f"{wide}{i}\n" for i in range(1, 21)))
+        tools, _ = self._tools(ws)
+        out = tools["read_file"].fn(path="daemon/wide.py")
+        shown = [l for l in out.splitlines() if l.startswith("x")]
+        self.assertLess(len(shown), 20)                    # the budget cut the page
+        self.assertIn(f"lines 1–{len(shown)} of 20", out)
+        self.assertIn(f"start_line={len(shown) + 1}", out) # next page = first unseen line
+        nxt = tools["read_file"].fn(path="daemon/wide.py", start_line=len(shown) + 1)
+        self.assertTrue(nxt.startswith(f"{wide}{len(shown) + 1}\n"))
+
+    def test_small_file_reads_whole_with_no_hint(self):
+        tools, _ = self._tools(self._ws(lines=5))
+        out = tools["read_file"].fn(path="daemon/big.py")
+        self.assertEqual(out, "".join(f"line{i}\n" for i in range(1, 6)))
+
+
+class NoScratchTest(_Base):
+    def test_write_file_refuses_non_python_under_tests(self):
+        ws = tempfile.mkdtemp(prefix="eng-ws-")
+        os.makedirs(os.path.join(ws, "tests"))
+        tools, state = self._tools(ws)
+        wf = tools["write_file"].fn
+        for bad in ("tests/_d1.txt", "tests/dump.json", "tests/notes.md"):
+            out = wf(path=bad, content="x")
+            self.assertIn("refused", out, bad)
+            self.assertIn("scratch", out, bad)
+            self.assertFalse(os.path.exists(os.path.join(ws, bad)), bad)
+        self.assertIn("wrote", wf(path="tests/test_new.py", content="import unittest\n"))
+        self.assertEqual(state["written"], {"tests/test_new.py"})
+
+
+class FinishGateTest(_Base):
+    def test_tests_only_diff_is_refused_as_no_implementation(self):
+        replies = [
+            tool_call_message("write_file",
+                              {"path": "tests/test_marker.py",
+                               "content": "import unittest\n"}, "w1"),
+            tool_call_message("run_tests", {}, "t1"),
+            "done."]
+        res, host, _, n, _ = self._build(replies, lambda w, p: (True, "OK"))
+        self.assertEqual(res.status, "error")
+        self.assertIn("tests only", res.reason)
+        self.assertEqual(host.pushes, [])
+        self.assertEqual(host.build_prs, [])
+
+    def test_scratch_file_left_by_a_test_aborts_the_push(self):
+        def dumper(workspace, paths):
+            with open(os.path.join(workspace, "tests", "_d1.txt"), "w") as f:
+                f.write("chunk\n")
+            return True, "OK"
+        replies = [
+            tool_call_message("write_file",
+                              {"path": "fpl_marker.py", "content": "VERSION = 1\n"}, "w1"),
+            tool_call_message("run_tests", {}, "t1"),
+            "done."]
+        res, host, _, n, _ = self._build(replies, dumper)
+        self.assertEqual(res.status, "error")
+        self.assertIn("scratch file", res.reason)
+        self.assertIn("tests/_d1.txt", res.reason)
+        self.assertEqual(host.pushes, [])
 
 
 if __name__ == "__main__":
