@@ -252,6 +252,44 @@ to PR-create + push `gaffer/*` and `pi/live`, no merge (deploy/README.md).
 runner and prints branch, file count, link and the ACL refusal; harness is
 `tests/test_propose.py` + `tests/test_propose_loop.py` + `tests/test_propose_cmd.py`.
 
+### Commissioning builds (spec §3/§5/§6)
+
+The gaffer commissions engineering work like it proposes a role, and just as it
+cannot merge one. It ends a reply with a fenced ```` ```build ```` block —
+`ticket: new` (or `ticket: <number>` to reuse an open issue), `title:`, a `---`
+line, then the spec markdown (goal, expected files, acceptance criteria, tests).
+`daemon/build.py` strips the block before Telegram (like ```` ```plan ````),
+opens a GitHub issue for a new ticket (labels `gaffer`, `build`) via the same
+git host as #55, and records it as the single **pending build** in the shared
+`ApprovalStore` (`pending_build` / `running_build`, both `None` when idle,
+persisted beside the plan state) — `🔧 build #N queued — say "build #N" to
+start`. A second block while one is pending is dropped (`⛔ a build is already
+pending (#N)`); with no GitHub token the block is dropped with `⚠ builds need
+the GitHub token on this box`. The build-approval token is **never a bare
+`yes`** (that approves a plan) — commissioning is event-driven on Rohit's
+explicit word.
+
+The gate is deterministic daemon code in `loop.process_message`, **after** the
+plan gate and before any model call: `build #N` / `build` spawns
+`python3 -m daemon build N` detached (`start_new_session`, stdout/stderr →
+`data/work/build-N.log`) and flips `running_build`; a start while one is running
+is refused (`⛔ build #M running — wait or "cancel build"`); `cancel build`
+clears the pending build and kills a running one's process group. One pending,
+one running, at a time; merge is never automatic. A pull-reload restart kills a
+running build (known limit): on the next daemon start `recover_builds` clears the
+dead pid and pings `⚠ build #N died with the daemon restart — say "build #N" to
+retry`. `daemon build N` loads config, fetches the issue body via the host and
+hands it to the on-Pi **engineer** (`daemon.engineer.run_build`, PR 3); until
+that lands it is a clean stub (`❌ build #N failed: engineer not wired`, exit 1).
+The tier-1 **path ACL** (`build.path_allowed`, spec §5) bounds what a build may
+write — `daemon/`, `tests/`, `agent/roles/*` (not `engineer.md`),
+`agent/playbooks/`, `docs/`, `plans/`, `README.md`, `AGENTS.md`, root `*.py`;
+everything else (`deploy/`, `.github/`, `season-state.json`, `agent/memory/`,
+`agent/reports/`, `data/`, `fixtures/`, any dotfile, `..`, absolutes) is denied.
+The git host gains `open_issue` / `issue_status` / `issue_body` / `pr_status`
+(via `gh`, token only in the child env, scrubbed). Harness is `tests/test_build.py`
++ `tests/test_build_loop.py` + `tests/test_build_cmd.py`.
+
 ## Season state (single source of truth)
 
 `season-state.json` is the live record of "my season" — squad, bank, free transfers, chips.

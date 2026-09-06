@@ -176,7 +176,13 @@ def plan_summary(plan):
 
 
 _IDLE = {"gw": None, "phase": "idle", "pending_plan": None,
-         "approved_plan": None, "draft_sent": False, "final_sent": False}
+         "approved_plan": None, "draft_sent": False, "final_sent": False,
+         # Commissioning-build state (spec §3) lives beside the plan state: one
+         # build queued, one running, both None when idle. Persisted with the
+         # rest of the machine so a fresh process (the spawned engineer) and the
+         # reply loop share one source of truth; old state files load these as
+         # None (load() merges over _IDLE, so a missing key defaults cleanly).
+         "pending_build": None, "running_build": None}
 
 
 class ApprovalStore:
@@ -199,12 +205,16 @@ class ApprovalStore:
         self.approved_plan = d["approved_plan"]
         self.draft_sent = d["draft_sent"]
         self.final_sent = d["final_sent"]
+        self.pending_build = d["pending_build"]
+        self.running_build = d["running_build"]
 
     def _dict(self):
         return {"gw": self.gw, "phase": self.phase,
                 "pending_plan": self.pending_plan,
                 "approved_plan": self.approved_plan,
-                "draft_sent": self.draft_sent, "final_sent": self.final_sent}
+                "draft_sent": self.draft_sent, "final_sent": self.final_sent,
+                "pending_build": self.pending_build,
+                "running_build": self.running_build}
 
     def load(self):
         """Read the file into this instance and return self. Missing or corrupt
@@ -251,6 +261,36 @@ class ApprovalStore:
         self.pending_plan = new_plan
         self.approved_plan = None
         self.phase = "awaiting_approval"
+        return self.save()
+
+    # --- commissioning-build state (spec §3) -------------------------------
+    # These sit alongside the plan machine but never touch its `phase`: a build
+    # can be queued or running independent of where a deadline plan stands.
+
+    def queue_build(self, build):
+        """Freeze a build request as the single pending build (`build` = an
+        {issue, title, spec, queued_at} dict). One at a time — the caller
+        refuses a second while `pending_build` is set."""
+        self.pending_build = build
+        return self.save()
+
+    def run_build(self, running):
+        """Move the pending build to running (`running` = {issue, pid,
+        started_at}) and clear the pending slot in one atomic write."""
+        self.running_build = running
+        self.pending_build = None
+        return self.save()
+
+    def cancel_build(self):
+        """`cancel build`: clear both slots (the caller kills a live pid first)."""
+        self.pending_build = None
+        self.running_build = None
+        return self.save()
+
+    def clear_running_build(self):
+        """Dead-pid recovery on startup: drop a running build whose process no
+        longer exists (a pull-reload restart killed it), leaving pending as-is."""
+        self.running_build = None
         return self.save()
 
 
