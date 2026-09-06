@@ -26,6 +26,7 @@ Block format (header lines, `---`, then the role file body):
     ```
 """
 
+import json
 import os
 import re
 import shutil
@@ -257,13 +258,20 @@ def run_propose(proposal, host, logger, trigger="chat", now=None):
 
 class FakeGitHost:
     """Records what a real runner would have done. `existing` seeds branches
-    that already exist on the remote; `fail` makes open_pr raise."""
+    that already exist on the remote; `fail` makes open_pr raise. `issues` /
+    `prs` seed issue and PR state so the build path (spec §6) can be driven
+    offline; opened issues get incrementing numbers."""
 
-    def __init__(self, existing=(), fail=None, url_base="https://github.com/x/y/pull/"):
+    def __init__(self, existing=(), fail=None, url_base="https://github.com/x/y/pull/",
+                 issues=None, prs=None, issue_url_base="https://github.com/x/y/issues/"):
         self.existing = set(existing)
         self.fail = fail
         self.url_base = url_base
+        self.issue_url_base = issue_url_base
         self.proposals = []
+        self.issues = dict(issues or {})
+        self.prs = dict(prs or {})
+        self._next_issue = (max(self.issues) + 1) if self.issues else 1
 
     def branch_exists(self, branch):
         return branch in self.existing
@@ -275,6 +283,36 @@ class FakeGitHost:
                                "title": title, "body": body})
         self.existing.add(branch)
         return f"{self.url_base}{len(self.proposals)}"
+
+    # --- issue / PR ops (spec §6) ------------------------------------------
+    def open_issue(self, title, body, labels=()):
+        n = self._next_issue
+        self._next_issue += 1
+        self.issues[n] = {"title": title, "body": body, "labels": list(labels),
+                          "state": "open", "comments": []}
+        return n, f"{self.issue_url_base}{n}"
+
+    def issue_status(self, n):
+        it = self.issues.get(n)
+        if it is None:
+            raise GitHostError(f"no issue #{n}")
+        labels = ", ".join(it.get("labels") or []) or "—"
+        comments = it.get("comments") or []
+        last = comments[-1] if comments else "—"
+        return f"{it['state']} · {it['title']} · labels: {labels} · last: {last}"
+
+    def issue_body(self, n):
+        it = self.issues.get(n)
+        if it is None:
+            raise GitHostError(f"no issue #{n}")
+        return it["title"], it.get("body") or ""
+
+    def pr_status(self, n):
+        pr = self.prs.get(n)
+        if pr is None:
+            raise GitHostError(f"no PR #{n}")
+        return (f"{pr.get('state', 'OPEN')} · draft={pr.get('draft', False)} · "
+                f"mergeable={pr.get('mergeable', '?')} · checks: {pr.get('checks', '?')}")
 
 
 def _subprocess_run(argv, env, cwd):
@@ -368,3 +406,54 @@ class GhGitHost:
             except Exception:              # noqa: BLE001 — best-effort cleanup
                 pass
             shutil.rmtree(tmp, ignore_errors=True)
+
+    # --- issue / PR ops (spec §6) ------------------------------------------
+    # All via `gh`, the token only in the child env (self._cmd → self._env),
+    # scrubbed from any error, SUBPROCESS_TIMEOUT as for the propose path.
+
+    def open_issue(self, title, body, labels=()):
+        """Open an issue via `gh issue create`; returns (number, url). The body
+        goes through a temp file so no spec markdown lands on the command line."""
+        tmp = tempfile.mkdtemp(prefix="gaffer-issue-")
+        try:
+            body_path = os.path.join(tmp, "body.md")
+            with open(body_path, "w", encoding="utf-8") as f:
+                f.write(body or "")
+            argv = ["gh", "issue", "create", "--repo", self.repo,
+                    "--title", title, "--body-file", body_path]
+            for label in labels:
+                argv += ["--label", label]
+            out = self._cmd(argv)
+            url = out.strip().splitlines()[-1] if out.strip() else ""
+            try:
+                number = int(url.rstrip("/").rsplit("/", 1)[-1])
+            except ValueError:
+                raise GitHostError(f"could not read issue number from {url!r}")
+            return number, url
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def issue_status(self, n):
+        out = self._cmd(["gh", "issue", "view", str(n), "--repo", self.repo,
+                         "--json", "state,title,labels,comments"])
+        d = json.loads(out)
+        labels = ", ".join(l.get("name", "") for l in d.get("labels") or []) or "—"
+        comments = d.get("comments") or []
+        last = (comments[-1].get("body") or "").strip()[:200] if comments else "—"
+        return f"{d.get('state')} · {d.get('title')} · labels: {labels} · last: {last}"
+
+    def issue_body(self, n):
+        out = self._cmd(["gh", "issue", "view", str(n), "--repo", self.repo,
+                         "--json", "title,body"])
+        d = json.loads(out)
+        return d.get("title") or "", d.get("body") or ""
+
+    def pr_status(self, n):
+        out = self._cmd(["gh", "pr", "view", str(n), "--repo", self.repo,
+                         "--json", "state,isDraft,mergeable,statusCheckRollup"])
+        d = json.loads(out)
+        rollup = d.get("statusCheckRollup") or []
+        states = [c.get("conclusion") or c.get("state") or "?" for c in rollup]
+        checks = ", ".join(states) if states else "—"
+        return (f"{d.get('state')} · draft={d.get('isDraft')} · "
+                f"mergeable={d.get('mergeable')} · checks: {checks}")

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from daemon.actuator import ManualApplyActuator
 from daemon.brief import next_deadline, run_brief
+from daemon.build import BuildGate, recover_builds
 from daemon.config import Config, load_config, load_notify_config
 from daemon.fanout import ANALYSTS, Fanout
 from daemon.helper import REPORT_CAP_TOKENS, ROLE_FILES, run_helper
@@ -129,11 +130,16 @@ def run_daemon(env=None, out=None):
     # The diary the reply loop appends to (#20) is the same file the assembler
     # reads, so a lesson recorded on one wake is on the table for the next.
     learnings = LearningsLog(_learnings_path(env), state_path=_state_path(env))
-    # #55: `propose role: X` in chat -> the one propose path (real git/gh runner
-    # when the GitHub token is provisioned; a "no token" reply otherwise).
-    proposer = make_proposer(build_git_host(cfg, REPO_ROOT), logger)
+    # #55 / spec §3: one git host serves both the propose path and the build
+    # path (real git/gh runner when the token is provisioned; None otherwise).
+    host = build_git_host(cfg, REPO_ROOT)
+    proposer = make_proposer(host, logger)
+    # Dead-pid recovery (spec §3): a pull-reload restart killed a running build —
+    # clear it and ping Rohit to retry. Runs after Telegram is constructed.
+    recover_builds(approvals.store, telegram, cfg.allowlist, logger)
+    builds = BuildGate(approvals.store, host, _data_dir(env))
     run(cfg, telegram, llm, logger, assembler=assembler, approvals=approvals,
-        learnings=learnings, proposer=proposer)
+        learnings=learnings, proposer=proposer, builds=builds)
     return 0
 
 
@@ -674,6 +680,78 @@ def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
     return 0
 
 
+def run_build_cmd(args, env=None, transport=None, out=None, host=None):
+    """`daemon build <N>` — the spawned engineer job (spec §3). Loads config,
+    fetches issue #N's title/body via the git host, and hands it to
+    `daemon.engineer.run_build` (PR 3). Until that module exists this is a clean
+    stub: it fails with `engineer not wired`, pings the chats, and exits 1. Exit
+    2 only on a bad invocation."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    args = list(args or [])
+    try:
+        n = int(args[0]) if args and not args[0].startswith("--") else None
+    except ValueError:
+        n = None
+    if n is None:
+        out.write("build: usage: build <issue-number>\n")
+        return 2
+
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram, llm, logger = build_stack(cfg, transport, out)
+    host = build_git_host(cfg, REPO_ROOT) if host is None else host
+    # This is the running build (the gate set `running_build` before spawning
+    # us). Clear it on the way out — success or failure — so the gate is never
+    # stuck refusing the next build with a stale `running_build`.
+    store = ApprovalStore(_approval_state_path(env))
+
+    def clear_running():
+        store.load()
+        if store.running_build and store.running_build.get("issue") == n:
+            store.clear_running_build()
+
+    try:
+        if host is None:
+            out.write("build: no GitHub token configured — cannot fetch the issue\n")
+            return 1
+        try:
+            title, body = host.issue_body(n)
+        except Exception as e:            # noqa: BLE001 — a bad issue is a clean fail
+            logger.event("build_error", issue=n, reason=f"{type(e).__name__}: {e}")
+            out.write(f"build: cannot fetch issue #{n}: {e}\n")
+            return 1
+
+        # The engineer (PR 3) provides daemon.engineer.run_build; until then this
+        # command is a stub that fails cleanly so the whole gate is exercisable now.
+        try:
+            from daemon import engineer as engineer_mod
+        except ImportError:
+            engineer_mod = None
+        if engineer_mod is None or not hasattr(engineer_mod, "run_build"):
+            status, pr_url, cost, reason = "error", None, 0.0, "engineer not wired"
+        else:
+            res = engineer_mod.run_build(n, title, body, cfg, host, llm, logger,
+                                         env=env)
+            status, pr_url, cost, reason = (res.status, res.pr_url, res.cost_usd,
+                                            res.reason)
+
+        if status == "error":
+            for chat_id in sorted(cfg.allowlist):
+                try:
+                    telegram.send_message(chat_id=chat_id,
+                                          text=f"❌ build #{n} failed: {reason}")
+                except Exception as e:    # noqa: BLE001 — a lost ping is logged only
+                    logger.event("build_ping_error", chat_id=chat_id,
+                                 error=type(e).__name__, detail=str(e))
+        out.write(f"build: issue={n} status={status} pr={pr_url or '—'} "
+                  f"cost=${cost:.4f}"
+                  + (f" reason={reason}" if reason else "") + "\n")
+        return 0 if status == "ok" else 1
+    finally:
+        clear_running()
+
+
 def run_propose_cmd(args, env=None, transport=None, out=None, host=None):
     """`daemon propose "<name>" --role <file.md> [--evidence "<why>"]` — the
     #55 propose path from the command line: a drafted role file on disk (no
@@ -923,6 +1001,8 @@ def _selftest_propose(cfg):
 def main(argv):
     if len(argv) > 1 and argv[1] == "propose":
         return run_propose_cmd(argv[2:])
+    if len(argv) > 1 and argv[1] == "build":
+        return run_build_cmd(argv[2:])
     if len(argv) > 1 and argv[1] == "selftest":
         return run_selftest()
     if len(argv) > 1 and argv[1] == "notify":

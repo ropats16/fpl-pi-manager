@@ -18,6 +18,9 @@ parse runs, so both blocks are gone by the time Telegram sees the text.
 
 import time
 
+from daemon.build import (BUILD_HINT, cancel_pending_build, commission_build,
+                          is_build_approval, is_build_cancel, is_build_request,
+                          parse_build, start_pending_build)
 from daemon.learnings import record_learnings
 from daemon.prompt import select_playbook
 from daemon.plan import (append_decision_log, is_approval, is_stop, parse_plan,
@@ -27,7 +30,7 @@ from daemon.propose import (NO_TOKEN_REPLY, PROPOSE_HINT, is_propose_request,
 
 
 def process_message(msg, cfg, telegram, llm, logger, assembler=None,
-                    approvals=None, learnings=None, proposer=None):
+                    approvals=None, learnings=None, proposer=None, builds=None):
     """Handle one incoming Telegram message. Returns True if a reply was sent.
 
     When an `assembler` is wired, the system prompt is assembled fresh from the
@@ -75,6 +78,23 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
             telegram.send_message(msg.chat_id, "⏸ hold — awaiting fresh yes")
             return True
 
+    # --- deterministic build gate (spec §3) — after the plan gate, no model ----
+    # `build #N` / `build` starts the single pending build; `cancel build` clears
+    # it (killing a live pid). A bare `yes` never reaches here (it approved a plan
+    # or fell through above), so build commissioning can never ride a plan token.
+    if builds is not None:
+        bst = builds.store
+        if approvals is None or approvals.store is not bst:
+            bst.load()
+        if is_build_cancel(msg.text):
+            if cancel_pending_build(builds, telegram, msg.chat_id, logger):
+                return True
+        else:
+            n = is_build_approval(msg.text)
+            if n is not None and start_pending_build(
+                    builds, telegram, msg.chat_id, logger, number=n):
+                return True
+
     # --- debate / iterate / chat -> the model ---------------------------------
     # --- role proposal request (#55) — only on Rohit's explicit ask ----------
     asked = is_propose_request(msg.text)
@@ -83,7 +103,15 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
         logger.event("propose_refused", reason="no github token", text=msg.text)
         telegram.send_message(msg.chat_id, NO_TOKEN_REPLY)
         return True
-    user_text = msg.text + "\n\n" + PROPOSE_HINT if asked else msg.text
+    # A build request (spec §3) earns BUILD_HINT the same way a propose request
+    # earns PROPOSE_HINT — only on an explicit `build:` / `ticket:` message.
+    asked_build = builds is not None and is_build_request(msg.text)
+    parts = [msg.text]
+    if asked:
+        parts.append(PROPOSE_HINT)
+    if asked_build:
+        parts.append(BUILD_HINT)
+    user_text = "\n\n".join(parts)
     messages = None
     if assembler is not None:
         try:
@@ -149,6 +177,16 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
             send_text = (without + "\n\n⛔ Unrequested role proposal dropped — ask "
                          "`propose role: <name>` to open one.").strip()
 
+    # A commissioning build (spec §3): the ```build block never reaches Telegram;
+    # the outcome line does. `ticket: new` opens a GitHub issue and queues the
+    # build (say `build #N` to start); a second block while one is pending is
+    # dropped; no host wired is a fixed "needs the token" line. Never raises.
+    if builds is not None:
+        request, without = parse_build(send_text, logger)
+        if request is not None:
+            line = commission_build(builds, request, logger)
+            send_text = (without + "\n\n" + line).strip()
+
     logger.event("reply", from_id=msg.from_id, chat_id=msg.chat_id,
                  prompt=msg.text, reply=send_text)
     telegram.send_message(msg.chat_id, send_text)
@@ -156,13 +194,13 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
 
 
 def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None,
-              learnings=None, proposer=None):
+              learnings=None, proposer=None, builds=None):
     """One long-poll cycle. Returns the next offset to request."""
     for msg in telegram.get_updates(offset):
         try:
             process_message(msg, cfg, telegram, llm, logger, assembler=assembler,
                             approvals=approvals, learnings=learnings,
-                            proposer=proposer)
+                            proposer=proposer, builds=builds)
         except Exception as e:  # one bad message must not kill the daemon
             logger.event("error", from_id=getattr(msg, "from_id", None),
                          error=type(e).__name__, detail=str(e))
@@ -171,7 +209,7 @@ def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None
 
 
 def run(cfg, telegram, llm, logger, should_continue=lambda: True, idle_sleep=1.0,
-        assembler=None, approvals=None, learnings=None, proposer=None):
+        assembler=None, approvals=None, learnings=None, proposer=None, builds=None):
     """Resident loop: long-poll Telegram forever, waking on each message."""
     offset = 0
     logger.event("startup", model=cfg.model, allowlist_size=len(cfg.allowlist))
@@ -179,7 +217,7 @@ def run(cfg, telegram, llm, logger, should_continue=lambda: True, idle_sleep=1.0
         try:
             offset = poll_once(cfg, telegram, llm, logger, offset,
                                assembler=assembler, approvals=approvals,
-                               learnings=learnings, proposer=proposer)
+                               learnings=learnings, proposer=proposer, builds=builds)
         except Exception as e:  # network blip — log and keep cycling
             logger.event("poll_error", error=type(e).__name__, detail=str(e))
             time.sleep(idle_sleep)
