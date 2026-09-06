@@ -35,7 +35,10 @@ a build could open a PR that widens the ACL or rewrites the rules, but it cannot
 merge, so a human review catches it before it lands.
 
 Finish (spec §4): nothing changed → `error "no changes"`; the diff is re-checked
-against the ACL; a final full `run_tests` decides green/red; then
+against the ACL; a non-*.py file under tests/ → `error "scratch file in tests"`,
+a diff touching only tests/ → `error "tests only"` (the live-#78 shape: a
+file-dump harness instead of a feature — `read_file` is paged for the same
+reason); a final full `run_tests` decides green/red; then
 `host.push_branch` + `host.create_pr(draft=not green)`. Events: `build_start`,
 `build_tests` (green/red, n), `build_pr`, `build_fail`.
 """
@@ -101,12 +104,19 @@ _ESCAPE = "write_file refused: {rel} resolves outside the workspace."
 _SCRATCH_MSG = ("write_file refused: {rel} — only *.py test modules may be written "
                 "under tests/; no scratch, dump or data files (live build #78 "
                 "shipped a tests/_d*.txt file-reading harness instead of code).")
+_EXHAUSTED = ("write_file refused: the fix budget is spent — stop and summarise "
+              "what you changed and why the tests still fail; no further edits "
+              "will be accepted.")
+
+Issue = namedtuple("Issue", "number title body")
 
 
 def scratch_in_tests(paths):
     """The first path under tests/ that is not a *.py module, or None. A test
-    that writes such a file (a source dump, a chunk, a data file) is the #80
-    exploit; the finish line refuses the whole build on it."""
+    that writes such a file (a source dump, a chunk, a data file) is the live
+    build #78 exploit (closed PR #80); the finish line refuses the whole build
+    on it. Shape-specific: a dump written as *.py, or under daemon/ or docs/,
+    is caught only by the role prompt and the human PR review."""
     for p in sorted(paths):
         if p.startswith("tests/") and not p.endswith(".py"):
             return p
@@ -115,14 +125,11 @@ def scratch_in_tests(paths):
 
 def tests_only(paths):
     """True when every changed path lives under tests/ — a build with no
-    implementation (the #80 shape) is refused at the finish line."""
+    implementation (the live-#78 shape) is refused at the finish line. A
+    legitimate test-only ticket is refused too; that trade-off is deliberate
+    until one is actually needed."""
     paths = list(paths)
     return bool(paths) and all(p.startswith("tests/") for p in paths)
-_EXHAUSTED = ("write_file refused: the fix budget is spent — stop and summarise "
-              "what you changed and why the tests still fail; no further edits "
-              "will be accepted.")
-
-Issue = namedtuple("Issue", "number title body")
 
 
 class BuildResult:
@@ -309,13 +316,22 @@ def _build_tools(issue, root, state, fix_turns, test_runner, logger, scrub=None)
         except OSError as e:
             return f"read_file: {type(e).__name__}: {e}"
         total = len(lines)
+        if total == 0:
+            return f"read_file: {rel} is empty (0 lines)."
         if start > total:
             return f"read_file: start_line={start} is past the end ({total} lines)."
-        page = "".join(lines[start - 1:start - 1 + span])
+        # Emit whole lines up to the page span AND the token budget, so the
+        # trailer's range is exactly what was shown — a budget-cut page must
+        # not claim lines it never emitted (the next start_line would skip them).
         budget = char_budget(READ_MAX_TOKENS)
-        if len(page) > budget:
-            page = page[:budget] + f"\n…(page cut at ~{READ_MAX_TOKENS} tokens)"
-        end = min(start - 1 + span, total)
+        out, used, end = [], 0, start - 1
+        for line in lines[start - 1:start - 1 + span]:
+            if out and used + len(line) > budget:
+                break
+            out.append(line[:budget] if len(line) > budget else line)
+            used += len(out[-1])
+            end += 1
+        page = "".join(out)
         if start == 1 and end == total:
             return page                                   # the whole file, no noise
         hint = (f"\n…(lines {start}–{end} of {total}; call read_file(path, "

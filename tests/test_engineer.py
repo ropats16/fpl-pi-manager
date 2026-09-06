@@ -53,6 +53,21 @@ class _Base(unittest.TestCase):
                                       runner, self.logger, scrub=scrub)
         return {t.name: t for t in tools}, state
 
+    def _build(self, replies, test_runner, fix_turns=2):
+        """run_build end to end over a FakeGitHost clone of a tiny tree."""
+        host = FakeGitHost(url_base="https://github.com/x/y/pull/",
+                           clone_source=_small_src())
+        n, _ = host.open_issue("Add marker", "Create fpl_marker.py.",
+                               labels=["gaffer", "build"])
+        data_dir = tempfile.mkdtemp(prefix="eng-data-")
+        transport = FakeTransport(llm_replies=replies,
+                                  usage={"prompt_tokens": 1000, "completion_tokens": 100})
+        res = engineer.run_build(engineer.Issue(n, "Add marker", "Create fpl_marker.py."),
+                                 host, self._llm(transport), MODEL, CAPS, fix_turns,
+                                 data_dir, engineer.REPO_RULES, self.logger,
+                                 test_runner=test_runner)
+        return res, host, data_dir, n, transport
+
 
 # --- workspace ACL (spec §5) ----------------------------------------------------
 
@@ -179,20 +194,6 @@ class PrBodyTest(_Base):
 # --- run_build end to end -------------------------------------------------------
 
 class RunBuildTest(_Base):
-    def _build(self, replies, test_runner, fix_turns=2):
-        host = FakeGitHost(url_base="https://github.com/x/y/pull/",
-                           clone_source=_small_src())
-        n, _ = host.open_issue("Add marker", "Create fpl_marker.py.",
-                               labels=["gaffer", "build"])
-        data_dir = tempfile.mkdtemp(prefix="eng-data-")
-        transport = FakeTransport(llm_replies=replies,
-                                  usage={"prompt_tokens": 1000, "completion_tokens": 100})
-        res = engineer.run_build(engineer.Issue(n, "Add marker", "Create fpl_marker.py."),
-                                 host, self._llm(transport), MODEL, CAPS, fix_turns,
-                                 data_dir, engineer.REPO_RULES, self.logger,
-                                 test_runner=test_runner)
-        return res, host, data_dir, n, transport
-
     def test_green_stages_only_the_diff_and_opens_a_closing_pr(self):
         replies = [
             tool_call_message("write_file",
@@ -320,6 +321,21 @@ class PagedReadTest(_Base):
         self.assertIn("past the end", tools["read_file"].fn(path="daemon/big.py",
                                                             start_line=400))
 
+    def test_budget_cut_page_reports_only_the_lines_it_emitted(self):
+        ws = tempfile.mkdtemp(prefix="eng-ws-")
+        os.makedirs(os.path.join(ws, "daemon"))
+        wide = "x" * 3000                                  # ~750 tokens per line
+        with open(os.path.join(ws, "daemon", "wide.py"), "w") as f:
+            f.write("".join(f"{wide}{i}\n" for i in range(1, 21)))
+        tools, _ = self._tools(ws)
+        out = tools["read_file"].fn(path="daemon/wide.py")
+        shown = [l for l in out.splitlines() if l.startswith("x")]
+        self.assertLess(len(shown), 20)                    # the budget cut the page
+        self.assertIn(f"lines 1–{len(shown)} of 20", out)
+        self.assertIn(f"start_line={len(shown) + 1}", out) # next page = first unseen line
+        nxt = tools["read_file"].fn(path="daemon/wide.py", start_line=len(shown) + 1)
+        self.assertTrue(nxt.startswith(f"{wide}{len(shown) + 1}\n"))
+
     def test_small_file_reads_whole_with_no_hint(self):
         tools, _ = self._tools(self._ws(lines=5))
         out = tools["read_file"].fn(path="daemon/big.py")
@@ -342,8 +358,6 @@ class NoScratchTest(_Base):
 
 
 class FinishGateTest(_Base):
-    _build = RunBuildTest.__dict__["_build"]      # the harness, not its tests
-
     def test_tests_only_diff_is_refused_as_no_implementation(self):
         replies = [
             tool_call_message("write_file",

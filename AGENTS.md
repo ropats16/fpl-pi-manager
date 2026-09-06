@@ -336,6 +336,11 @@ next `start_line` in the trailer) and `write_file` refuses any non-`*.py` path
 under `tests/` — both rails from live build #78 (PR #80, 2026-09-06), where the
 engineer, unable to read `daemon/brief.py` in one call, wrote a "test" that
 dumped the source into `tests/_d*.txt` on exit and shipped only that harness.
+These rails are shape-specific, not a general "no source copying" guard: a dump
+written as `tests/_d1.py`, or under `daemon/`, `docs/` or `plans/`, passes them
+and is caught only by the role prompt and the human PR review (merge is human —
+accepted). `tests only` also refuses a legitimate test-only ticket; add an
+opt-out when one is actually needed.
 
 **Finish:** no file changed → `error "no changes"`; a non-`*.py` file under
 `tests/` → `error "scratch file in tests: <p>"`; a diff touching only `tests/` →
