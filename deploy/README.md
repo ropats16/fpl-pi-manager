@@ -355,3 +355,14 @@ So the pull path is the deploy path: a green PR reaches the *running* daemon
 hands-off, and only a self-test-clean build ever restarts it. `Restart=always`
 still covers crash-recovery independently. To force a deploy now rather than wait
 for the timer: `sudo systemctl start fpl-gaffer-pull.service`.
+
+**Build jobs and the reload.** `build #N` spawns `daemon build N` as a detached
+child of the chat service (same user, env and sandbox). A `*.py` merge that passes
+the self-test triggers `systemctl restart fpl-gaffer`, which **kills any running
+build** — its workspace under `data/work/build-N/` is left for post-mortem but the
+PR is not opened. This is the known v1 limit: nothing gates the pull timer while a
+build runs. Just say `build #N` again to restart it (the branch push is a plain
+`--force` on the build's own `gaffer/build-N` namespace, so a re-run overwrites it
+cleanly — a bare `--force-with-lease` would reject the retry off the fresh
+single-branch clone). On the next daemon start `recover_builds` clears the dead
+build and pings you to retry.

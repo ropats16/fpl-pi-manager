@@ -14,8 +14,10 @@ from datetime import datetime, timezone
 from daemon.actuator import ManualApplyActuator
 from daemon.agent import Tool
 from daemon.brief import next_deadline, run_brief
+from daemon import engineer
 from daemon.build import BuildGate, recover_builds
-from daemon.config import Config, load_config, load_notify_config
+from daemon.config import (Config, load_build_caps, load_build_fix_turns,
+                           load_config, load_notify_config)
 from daemon.fanout import ANALYSTS, Fanout
 from daemon.gaffer_tools import build_gaffer_tools
 from daemon.helper import REPORT_CAP_TOKENS, ROLE_FILES, run_helper
@@ -381,11 +383,18 @@ def run_selftest(out=None):
         out.write(line + "\n")
     ok = ok and scout_ok
 
+    # spec §4: the on-Pi engineer builds a ticket into a green PR, offline.
+    engineer_ok, engineer_lines = _selftest_engineer(cfg)
+    for line in engineer_lines:
+        out.write(line + "\n")
+    ok = ok and engineer_ok
+
     out.write(f"selftest: {'PASS' if ok else 'FAIL'} (events: {sorted(kinds)}, "
               f"helper={'PASS' if helper_ok else 'FAIL'}, "
               f"propose={'PASS' if propose_ok else 'FAIL'}, "
               f"fanout={'PASS' if fanout_ok else 'FAIL'}, "
-              f"scout={'PASS' if scout_ok else 'FAIL'})\n")
+              f"scout={'PASS' if scout_ok else 'FAIL'}, "
+              f"engineer={'PASS' if engineer_ok else 'FAIL'})\n")
     return 0 if ok else 1
 
 
@@ -749,12 +758,14 @@ def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
     return 0
 
 
-def run_build_cmd(args, env=None, transport=None, out=None, host=None):
-    """`daemon build <N>` — the spawned engineer job (spec §3). Loads config,
+def run_build_cmd(args, env=None, transport=None, out=None, host=None,
+                  run_build=None):
+    """`daemon build <N>` — the spawned engineer job (spec §3/§4). Loads config,
     fetches issue #N's title/body via the git host, and hands it to
-    `daemon.engineer.run_build` (PR 3). Until that module exists this is a clean
-    stub: it fails with `engineer not wired`, pings the chats, and exits 1. Exit
-    2 only on a bad invocation."""
+    `daemon.engineer.run_build`, then sends the Telegram receipt and prints the
+    summary line. Exit 0 for green/red, 1 for error, 2 for a bad invocation.
+    `run_build` is injectable so the receipts/exit codes are tested without a
+    real build (the suite never forks a real subprocess)."""
     out = sys.stderr if out is None else out
     env = os.environ if env is None else env
     args = list(args or [])
@@ -770,6 +781,7 @@ def run_build_cmd(args, env=None, transport=None, out=None, host=None):
     transport = UrllibTransport() if transport is None else transport
     telegram, llm, logger = build_stack(cfg, transport, out)
     host = build_git_host(cfg, REPO_ROOT) if host is None else host
+    run_build = engineer.run_build if run_build is None else run_build
     # This is the running build (the gate set `running_build` before spawning
     # us). Clear it on the way out — success or failure — so the gate is never
     # stuck refusing the next build with a stale `running_build`.
@@ -779,6 +791,14 @@ def run_build_cmd(args, env=None, transport=None, out=None, host=None):
         store.load()
         if store.running_build and store.running_build.get("issue") == n:
             store.clear_running_build()
+
+    def ping(text):
+        for chat_id in sorted(cfg.allowlist):
+            try:
+                telegram.send_message(chat_id=chat_id, text=text)
+            except Exception as e:        # noqa: BLE001 — a lost ping is logged only
+                logger.event("build_ping_error", chat_id=chat_id,
+                             error=type(e).__name__, detail=str(e))
 
     try:
         if host is None:
@@ -791,32 +811,25 @@ def run_build_cmd(args, env=None, transport=None, out=None, host=None):
             out.write(f"build: cannot fetch issue #{n}: {e}\n")
             return 1
 
-        # The engineer (PR 3) provides daemon.engineer.run_build; until then this
-        # command is a stub that fails cleanly so the whole gate is exercisable now.
-        try:
-            from daemon import engineer as engineer_mod
-        except ImportError:
-            engineer_mod = None
-        if engineer_mod is None or not hasattr(engineer_mod, "run_build"):
-            status, pr_url, cost, reason = "error", None, 0.0, "engineer not wired"
+        res = run_build(engineer.Issue(n, title, body), host, llm,
+                        cfg.helpers.models["engineer"], load_build_caps(env),
+                        load_build_fix_turns(env), _data_dir(env),
+                        engineer.REPO_RULES, logger)
+        status, pr_url, cost, reason = (res.status, res.pr_url, res.cost_usd,
+                                        res.reason)
+        # A build spends real money too: fold it into the MTD ledger like a
+        # helper run does (#56), so the month's bill reflects builds.
+        build_ledger(cfg, env).add(cost, source="engineer")
+        if status == "green":
+            ping(f"✅ build #{n} → PR {pr_url}")
+        elif status == "red":
+            ping(f"🟥 build #{n} red → draft PR {pr_url}")
         else:
-            res = engineer_mod.run_build(n, title, body, cfg, host, llm, logger,
-                                         env=env)
-            status, pr_url, cost, reason = (res.status, res.pr_url, res.cost_usd,
-                                            res.reason)
-
-        if status == "error":
-            for chat_id in sorted(cfg.allowlist):
-                try:
-                    telegram.send_message(chat_id=chat_id,
-                                          text=f"❌ build #{n} failed: {reason}")
-                except Exception as e:    # noqa: BLE001 — a lost ping is logged only
-                    logger.event("build_ping_error", chat_id=chat_id,
-                                 error=type(e).__name__, detail=str(e))
+            ping(f"❌ build #{n} failed: {reason}")
         out.write(f"build: issue={n} status={status} pr={pr_url or '—'} "
                   f"cost=${cost:.4f}"
                   + (f" reason={reason}" if reason else "") + "\n")
-        return 0 if status == "ok" else 1
+        return 0 if status in ("green", "red") else 1
     finally:
         clear_running()
 
@@ -1030,6 +1043,51 @@ def _selftest_scout(cfg):
     lines.append(f"scout: gw={gw} entries={entries} newest-first={newest_first} "
                  f"urgent={len(urgent) == 1} plan-in-task={plan_in_task} "
                  f"log={log_path} cost=${cost:.5f}")
+    return ok, lines
+
+
+def _selftest_engineer(cfg):
+    """The spec §4 acceptance demo, offline: the engineer clones a small
+    workspace through the fake git host, writes one file, runs a (faked) green
+    suite, and the host records a push + a non-draft PR whose body closes the
+    issue. One write + one green run_tests, no real subprocess. Returns
+    (ok, lines)."""
+    src = tempfile.mkdtemp(prefix="gaffer-selftest-eng-src-")
+    os.makedirs(os.path.join(src, "tests"))
+    with open(os.path.join(src, "tests", "test_placeholder.py"), "w") as f:
+        f.write("import unittest\n\n\nclass T(unittest.TestCase):\n"
+                "    def test_ok(self):\n        self.assertTrue(True)\n")
+    host = FakeGitHost(url_base="https://github.com/selftest/pull/", clone_source=src)
+    title, spec = "Add a marker module", "Create fpl_marker.py exposing VERSION = 1."
+    n, _ = host.open_issue(title, spec, labels=["gaffer", "build"])
+    data_dir = tempfile.mkdtemp(prefix="gaffer-selftest-eng-")
+    transport = FakeTransport(
+        llm_replies=[
+            tool_call_message("write_file",
+                              {"path": "fpl_marker.py", "content": "VERSION = 1\n"}, "w1"),
+            tool_call_message("run_tests", {}, "t1"),
+            "Added fpl_marker.py with VERSION = 1; suite green."],
+        usage={"prompt_tokens": 2000, "completion_tokens": 200})
+    logbuf = io.StringIO()
+    _, llm, logger = build_stack(cfg, transport, logbuf)
+    res = engineer.run_build(
+        engineer.Issue(n, title, spec), host, llm, cfg.helpers.models["engineer"],
+        load_build_caps({}), load_build_fix_turns({}), data_dir,
+        engineer.REPO_RULES, logger,
+        test_runner=lambda w, p: (True, "Ran 1 test in 0.001s\n\nOK"))
+    events = [json.loads(l) for l in logbuf.getvalue().splitlines()]
+    kinds = {e["event"] for e in events}
+    wrote = os.path.exists(os.path.join(data_dir, "work", f"build-{n}", "fpl_marker.py"))
+    pr = host.build_prs[0] if host.build_prs else {}
+    closes = f"Closes #{n}" in pr.get("body", "")
+    ok = (res.status == "green" and bool(res.pr_url) and wrote and bool(host.pushes)
+          and pr.get("draft") is False and closes
+          and {"build_start", "build_tests", "build_pr"} <= kinds)
+    lines = [json.dumps(e) for e in events]
+    lines.append(f"engineer: issue={n} status={res.status} pr={res.pr_url} "
+                 f"file-written={wrote} pushed={bool(host.pushes)} "
+                 f"draft={pr.get('draft')} closes={closes} turns={res.turns} "
+                 f"cost=${res.cost_usd:.5f}")
     return ok, lines
 
 

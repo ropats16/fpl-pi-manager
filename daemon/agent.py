@@ -90,11 +90,17 @@ class AgentResult:
         self.status = "ok"
 
 
-def run_agent(messages, llm, model, tools, caps, logger, role, clock=None):
+def run_agent(messages, llm, model, tools, caps, logger, role, clock=None,
+              stop=None):
     """Run one bounded tool-loop conversation (spec §1). Returns an AgentResult;
     never raises. `messages` is a pre-assembled list (system + user…); the loop
     appends assistant/tool turns to it in place. With no tools it is a single
-    plain completion — today's chat path, unchanged behaviour."""
+    plain completion — today's chat path, unchanged behaviour.
+
+    `stop()` (optional) is a hard brake checked BEFORE each LLM call: when it
+    returns true the loop ends immediately with status `stopped` and the last
+    assistant text as the reply — the engineer's spent fix budget uses it to go
+    straight to finish instead of spinning to the turns cap (spec §4)."""
     clock = clock or (lambda: datetime.now(timezone.utc))
     res = AgentResult()
     res.started = clock()
@@ -119,6 +125,9 @@ def run_agent(messages, llm, model, tools, caps, logger, role, clock=None):
     last_content = ""
 
     while True:
+        if stop is not None and stop():
+            res.status = "stopped"
+            break
         if res.turns >= caps.turns:
             res.status = "cap_hit:turns"
             break

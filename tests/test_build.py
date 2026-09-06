@@ -370,6 +370,33 @@ class FakeGitHostOpsTest(unittest.TestCase):
         self.assertRaises(GitHostError, host.issue_body, 99)
         self.assertRaises(GitHostError, host.pr_status, 99)
 
+    def test_clone_copies_tree_and_records_push_and_pr(self):
+        # `clone` copies a caller-supplied source tree into the workspace so a
+        # test can run the engineer against a real-shaped checkout (spec §6).
+        src = tempfile.mkdtemp(prefix="clone-src-")
+        os.makedirs(os.path.join(src, "tests"))
+        with open(os.path.join(src, "tests", "test_x.py"), "w") as f:
+            f.write("# marker\n")
+        host = FakeGitHost(clone_source=src)
+        dest = os.path.join(tempfile.mkdtemp(prefix="clone-dest-"), "build-1")
+        host.clone(dest, "gaffer/build-1")
+        self.assertTrue(os.path.exists(os.path.join(dest, "tests", "test_x.py")))
+        self.assertEqual(host.clones[0], {"dest": dest, "branch": "gaffer/build-1"})
+        # status_paths sees a new file and a modified one, not the untouched tree.
+        self.assertEqual(host.status_paths(dest), [])
+        with open(os.path.join(dest, "new.py"), "w") as f:
+            f.write("x = 1\n")
+        with open(os.path.join(dest, "tests", "test_x.py"), "w") as f:
+            f.write("# changed\n")
+        self.assertEqual(host.status_paths(dest), ["new.py", "tests/test_x.py"])
+        host.push_branch(dest, "gaffer/build-1", "TC window (#1)", paths=["new.py"])
+        self.assertEqual(host.pushes[0]["message"], "TC window (#1)")
+        self.assertEqual(host.pushes[0]["paths"], ["new.py"])
+        url = host.create_pr("gaffer/build-1", "TC window", "the body", draft=True)
+        self.assertTrue(url.endswith("/1"))
+        self.assertTrue(host.build_prs[0]["draft"])
+        self.assertEqual(host.build_prs[0]["body"], "the body")
+
 
 class GhGitHostOpsTest(unittest.TestCase):
     """The real runner's issue/PR ops over a fake subprocess: argv + token only
@@ -416,6 +443,58 @@ class GhGitHostOpsTest(unittest.TestCase):
         s = host.pr_status(4)
         self.assertIn("draft=True", s)
         self.assertIn("SUCCESS, FAILURE", s)
+
+    def test_clone_fetches_base_then_checks_out_branch(self):
+        host, calls = self._host([("clone", 0, "", "")])
+        host.clone("/tmp/dest", "gaffer/build-1")
+        argvs = [a for a, _, _ in calls]
+        clone = next(a for a in argvs if "clone" in a)
+        self.assertIn("--branch", clone)             # of the base
+        self.assertIn("/tmp/dest", clone)
+        checkout = next(a for a in argvs if "checkout" in a)
+        self.assertEqual(checkout[:3], ["git", "checkout", "-b"])
+        self.assertIn("gaffer/build-1", checkout)
+        for _, env, _ in calls:                      # token only in the child env
+            self.assertEqual(env["GH_TOKEN"], self.TOKEN)
+
+    def test_push_branch_stages_only_given_paths_and_force_pushes(self):
+        host, calls = self._host([])
+        host.push_branch("/tmp/wd", "gaffer/build-1", "TC window (#1)",
+                         paths=["daemon/x.py", "tests/test_x.py"])
+        argvs = [a for a, _, _ in calls]
+        add = next(a for a in argvs if a[:2] == ["git", "add"])
+        self.assertEqual(add, ["git", "add", "--", "daemon/x.py", "tests/test_x.py"])
+        self.assertNotIn("-A", add)                  # never a blanket add
+        push = next(a for a in argvs if "push" in a)
+        self.assertIn("HEAD:refs/heads/gaffer/build-1", push)
+        self.assertIn("--force", push)               # plain force on our namespace
+        self.assertNotIn("--force-with-lease", push)
+        commit = next(a for a in argvs if "commit" in a)
+        self.assertIn("TC window (#1)", commit)      # message via -m, not on push
+        for _, env, cwd in calls:
+            self.assertEqual(cwd, "/tmp/wd")
+
+    def test_status_paths_parses_porcelain(self):
+        host, _ = self._host([("status", 0, "?? new.py\0 M daemon/x.py\0", "")])
+        self.assertEqual(host.status_paths("/tmp/wd"), ["new.py", "daemon/x.py"])
+
+    def test_create_pr_uses_body_file_and_draft_flag(self):
+        host, calls = self._host([
+            ("create", 0, "https://github.com/ropats16/fpl-pi-manager/pull/7\n", "")])
+        url = host.create_pr("gaffer/build-1", "TC window", "the spec + tests", draft=True)
+        self.assertEqual(url, "https://github.com/ropats16/fpl-pi-manager/pull/7")
+        create = next(a for a, _, _ in calls if "create" in a)
+        self.assertEqual(create[:4], ["gh", "pr", "create", "--repo"])
+        self.assertIn("--draft", create)
+        self.assertIn("--body-file", create)
+        self.assertNotIn("the spec + tests", " ".join(create))   # body never on argv
+
+    def test_create_pr_omits_draft_when_green(self):
+        host, calls = self._host([
+            ("create", 0, "https://github.com/ropats16/fpl-pi-manager/pull/8\n", "")])
+        host.create_pr("gaffer/build-1", "T", "b", draft=False)
+        create = next(a for a, _, _ in calls if "create" in a)
+        self.assertNotIn("--draft", create)
 
 
 if __name__ == "__main__":

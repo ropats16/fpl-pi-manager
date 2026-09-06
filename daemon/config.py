@@ -26,7 +26,13 @@ DEFAULT_SYSTEM_PROMPT = (
 # --- #51 role->model map -----------------------------------------------------------
 HELPER_MODEL = "z-ai/glm-5.3-flash"      # analysts + Scout (+ the search sub-call)
 AM_MODEL = "qwen/qwen3.8-max"            # assistant-manager: a third model family
-HELPER_ROLES = ("availability", "fixtures", "quality", "market", "chips", "scout", "am")
+# The engineer (spec §4) is a HELPER_ROLE only for model resolution
+# (GAFFER_HELPER_MODEL_ENGINEER, default HELPER_MODEL) and ledger role naming; it
+# is NOT run by the weekly fan-out (that iterates fanout.ANALYSTS) and is excluded
+# from ask_helper (gaffer_tools.ASKABLE_ROLES) — it builds tickets, it does not
+# answer chat questions.
+HELPER_ROLES = ("availability", "fixtures", "quality", "market", "chips", "scout",
+                "am", "engineer")
 
 # --- #51 seed fetch allowlist (bare domains; subdomains match) -----------------------
 DEFAULT_FETCH_ALLOWLIST = frozenset({
@@ -191,6 +197,32 @@ def load_chat_caps(env=None):
         turns=_int_env(env, "GAFFER_CHAT_MAX_TURNS", d["turns"]),
         minutes=_float_env(env, "GAFFER_CHAT_MAX_MINUTES", d["minutes"], 0),
         cost_usd=_float_env(env, "GAFFER_CHAT_MAX_COST_USD", d["cost_usd"], 0))
+
+
+# The on-Pi engineer's build-job ceilings (spec §4, tier-1). A build is a long
+# run_agent loop with a real test suite in it, so its caps are far above the
+# chat caps; `fix_turns` is how many times the engineer may fix after a red
+# `run_tests` before the loop is stopped and told to summarise.
+DEFAULT_BUILD_CAPS = {"turns": 40, "minutes": 25.0, "cost_usd": 0.60}
+DEFAULT_BUILD_FIX_TURNS = 2
+
+
+def load_build_caps(env=None):
+    """The engineer build-loop caps (spec §4) from defaults + env overrides —
+    same fall-back-per-field posture as the chat/helper ceilings."""
+    env = os.environ if env is None else env
+    d = DEFAULT_BUILD_CAPS
+    return Caps(
+        turns=_int_env(env, "GAFFER_BUILD_MAX_TURNS", d["turns"]),
+        minutes=_float_env(env, "GAFFER_BUILD_MAX_MINUTES", d["minutes"], 0),
+        cost_usd=_float_env(env, "GAFFER_BUILD_MAX_COST_USD", d["cost_usd"], 0))
+
+
+def load_build_fix_turns(env=None):
+    """The engineer's test-fix budget (spec §4): after a red `run_tests` it may
+    fix at most this many times; the next red stops the loop."""
+    env = os.environ if env is None else env
+    return _int_env(env, "GAFFER_BUILD_FIX_TURNS", DEFAULT_BUILD_FIX_TURNS)
 
 
 class Config:

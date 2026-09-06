@@ -36,6 +36,10 @@ from datetime import datetime, timezone
 
 from daemon.config import DEFAULT_GITHUB_REPO
 
+# This repo's root — the default tree FakeGitHost.clone copies into a workspace
+# so the build path (spec §6) runs against a real-shaped checkout offline.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 ROLES_DIR = "agent/roles"
 BRANCH_PREFIX = "gaffer/"
 DEFAULT_BASE = "main"
@@ -263,7 +267,8 @@ class FakeGitHost:
     offline; opened issues get incrementing numbers."""
 
     def __init__(self, existing=(), fail=None, url_base="https://github.com/x/y/pull/",
-                 issues=None, prs=None, issue_url_base="https://github.com/x/y/issues/"):
+                 issues=None, prs=None, issue_url_base="https://github.com/x/y/issues/",
+                 clone_source=None):
         self.existing = set(existing)
         self.fail = fail
         self.url_base = url_base
@@ -272,6 +277,13 @@ class FakeGitHost:
         self.issues = dict(issues or {})
         self.prs = dict(prs or {})
         self._next_issue = (max(self.issues) + 1) if self.issues else 1
+        # Build-path (spec §6) records. `clone_source` is the tree `clone`
+        # copies into the workspace (defaults to this repo) so a test can run the
+        # engineer against a real-shaped checkout without a network clone.
+        self.clone_source = clone_source or _REPO_ROOT
+        self.clones = []
+        self.pushes = []
+        self.build_prs = []
 
     def branch_exists(self, branch):
         return branch in self.existing
@@ -313,6 +325,51 @@ class FakeGitHost:
             raise GitHostError(f"no PR #{n}")
         return (f"{pr.get('state', 'OPEN')} · draft={pr.get('draft', False)} · "
                 f"mergeable={pr.get('mergeable', '?')} · checks: {pr.get('checks', '?')}")
+
+    # --- build workspace ops (spec §6) ------------------------------------
+    def clone(self, dest, branch):
+        """Copy the source tree into `dest` (a real-shaped workspace) and record
+        the branch — the offline stand-in for a fresh clone of origin/main."""
+        shutil.copytree(self.clone_source, dest,
+                        ignore=shutil.ignore_patterns(".git", "data", ".venv",
+                                                       "__pycache__", ".claude",
+                                                       "*.pyc"))
+        self.clones.append({"dest": dest, "branch": branch})
+
+    def status_paths(self, workdir):
+        """The workspace's changed/added paths vs the cloned source — the offline
+        stand-in for `git status --porcelain` (spec §5 real-tree re-check).
+        `.git`/`__pycache__`/`*.pyc` are ignored as the repo's .gitignore does."""
+        def _read(p):
+            try:
+                with open(p, "rb") as fh:
+                    return fh.read()
+            except OSError:
+                return None
+        changed = []
+        for dirpath, dirs, files in os.walk(workdir):
+            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+            for fn in files:
+                if fn.endswith(".pyc"):
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, fn), workdir)
+                src = os.path.join(self.clone_source, rel)
+                if _read(os.path.join(dirpath, fn)) != _read(src):
+                    changed.append(rel)
+        return sorted(changed)
+
+    def push_branch(self, workdir, branch, message, paths=None):
+        self.pushes.append({"workdir": workdir, "branch": branch,
+                            "message": message,
+                            "paths": sorted(paths) if paths else None})
+
+    def create_pr(self, branch, title, body, draft=False):
+        if self.fail:
+            raise GitHostError(self.fail)
+        self.build_prs.append({"branch": branch, "title": title, "body": body,
+                               "draft": draft})
+        self.existing.add(branch)
+        return f"{self.url_base}{len(self.build_prs)}"
 
 
 def _subprocess_run(argv, env, cwd):
@@ -457,3 +514,67 @@ class GhGitHost:
         checks = ", ".join(states) if states else "—"
         return (f"{d.get('state')} · draft={d.get('isDraft')} · "
                 f"mergeable={d.get('mergeable')} · checks: {checks}")
+
+    # --- build workspace ops (spec §6) ------------------------------------
+    # A fresh, detached full clone of origin/<base> into the build workspace,
+    # then a working branch; one commit + push over HTTPS; the PR via `gh`. The
+    # token reaches git/gh only through the child env (self._env), scrubbed from
+    # any error, SUBPROCESS_TIMEOUT as for the propose path.
+
+    def clone(self, dest, branch):
+        """Fresh clone of origin/<base> into `dest`, checked out on `branch`."""
+        self._cmd(["git", "-c", "credential.helper=", "-c",
+                   f"credential.helper={_CRED_HELPER}", "clone", "--quiet",
+                   "--single-branch", "--branch", self.base,
+                   f"https://github.com/{self.repo}.git", dest])
+        self._cmd(["git", "checkout", "-b", branch], cwd=dest)
+
+    def status_paths(self, workdir):
+        """The worktree's changed/added paths (`git status --porcelain`), so the
+        caller can re-check the REAL tree against the ACL (spec §5) — not just the
+        files a tool claims to have written. Rename entries yield the new path."""
+        out = self._cmd(["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+                        cwd=workdir)
+        paths = []
+        for rec in out.split("\0"):
+            # "XY <path>": a real entry has the 2-char code then a space at [2].
+            # A rename's trailing old-path field (no such prefix) is skipped.
+            if len(rec) < 4 or rec[2] != " ":
+                continue
+            paths.append(rec[3:])
+        return paths
+
+    def push_branch(self, workdir, branch, message, paths=None):
+        """Stage the given paths (all already ACL-cleared by the caller — never a
+        blanket `-A`), commit under the gaffer identity, and push HEAD to
+        `refs/heads/<branch>` over HTTPS. Plain `--force`: the branch namespace
+        is `gaffer/build-N`, ours by construction, so a retry of the same build
+        overwrites its own branch (a bare `--force-with-lease` would reject the
+        retry — the fresh single-branch clone has no remote-tracking ref for it)."""
+        add = ["git", "add", "--", *paths] if paths else ["git", "add", "-A"]
+        self._cmd(add, cwd=workdir)
+        self._cmd(["git", "-c", f"user.name={self.author[0]}",
+                   "-c", f"user.email={self.author[1]}",
+                   "commit", "--quiet", "-m", message], cwd=workdir)
+        self._cmd(["git", "-c", "credential.helper=", "-c",
+                   f"credential.helper={_CRED_HELPER}", "push", "--quiet",
+                   "--force",
+                   f"https://github.com/{self.repo}.git",
+                   f"HEAD:refs/heads/{branch}"], cwd=workdir)
+
+    def create_pr(self, branch, title, body, draft=False):
+        """`gh pr create` (–-draft when `draft`); body via a temp file so no
+        spec/test text lands on the command line. Returns the PR url."""
+        tmp = tempfile.mkdtemp(prefix="gaffer-build-pr-")
+        try:
+            body_path = os.path.join(tmp, "body.md")
+            with open(body_path, "w", encoding="utf-8") as f:
+                f.write(body or "")
+            argv = ["gh", "pr", "create", "--repo", self.repo, "--head", branch,
+                    "--base", self.base, "--title", title, "--body-file", body_path]
+            if draft:
+                argv.append("--draft")
+            out = self._cmd(argv)
+            return out.strip().splitlines()[-1] if out.strip() else ""
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
