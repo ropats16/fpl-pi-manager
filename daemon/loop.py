@@ -89,8 +89,10 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
         if is_build_cancel(msg.text):
             if cancel_pending_build(builds, telegram, msg.chat_id, logger):
                 return True
-        elif is_build_approval(msg.text) is not None:
-            if start_pending_build(builds, telegram, msg.chat_id, logger):
+        else:
+            n = is_build_approval(msg.text)
+            if n is not None and start_pending_build(
+                    builds, telegram, msg.chat_id, logger, number=n):
                 return True
 
     # --- debate / iterate / chat -> the model ---------------------------------

@@ -234,9 +234,15 @@ class ApprovalStore:
         return self
 
     def reset_for(self, gw):
-        """Clean idle state bound to a new gameweek — a fresh deadline cycle."""
+        """Clean idle PLAN state bound to a new gameweek — a fresh deadline cycle.
+        The commissioning-build slots survive: a build is queued/running on its
+        own event clock, and a new-GW brief wake must not drop a pending build or
+        orphan a running pid."""
+        pending_build, running_build = self.pending_build, self.running_build
         self._set(_IDLE)
         self.gw = gw
+        self.pending_build = pending_build
+        self.running_build = running_build
         return self.save()
 
     def set_pending(self, gw, plan):

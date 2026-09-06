@@ -131,6 +131,8 @@ class PathAclTest(unittest.TestCase):
 
 class SpawnTest(unittest.TestCase):
     def test_spawn_argv_and_log_and_detached(self):
+        import sys
+        from daemon.build import REPO_ROOT
         calls = {}
 
         class FakeProc:
@@ -142,10 +144,12 @@ class SpawnTest(unittest.TestCase):
             return FakeProc()
 
         tmp = tempfile.mkdtemp(prefix="build-spawn-")
-        pid = spawn_build(7, tmp, argv0="/usr/bin/python3", popen=fake_popen)
+        pid = spawn_build(7, tmp, popen=fake_popen)
         self.assertEqual(pid, 4321)
-        self.assertEqual(calls["argv"], ["/usr/bin/python3", "-m", "daemon", "build", "7"])
+        self.assertEqual(calls["argv"],
+                         [sys.executable, "-m", "daemon", "build", "7"])
         self.assertTrue(calls["kw"]["start_new_session"])
+        self.assertEqual(calls["kw"]["cwd"], REPO_ROOT)      # child runs from repo root
         self.assertTrue(os.path.exists(os.path.join(tmp, "work", "build-7.log")))
 
     def test_pid_alive(self):
@@ -221,6 +225,22 @@ class CommissionTest(unittest.TestCase):
         self.assertIn("build #1 started", tg.sent[0]["text"])
         self.assertEqual(_events(buf)[-1]["event"], "build_started")
 
+    def test_start_number_mismatch_is_refused(self):
+        store, host = _store(), FakeGitHost()
+        spawned = []
+        builds = BuildGate(store, host, "/tmp",
+                           spawn=lambda n, d: spawned.append(n) or 5)
+        logger, _ = _logger()
+        commission_build(builds, parse_build(BLOCK)[0], logger, now=NOW)  # #1 pending
+        tg = FakeTelegram()
+        self.assertTrue(start_pending_build(builds, tg, 42, logger, now=NOW, number=12))
+        self.assertIn("no pending build #12", tg.sent[0]["text"])
+        self.assertEqual(spawned, [])                       # nothing spawned
+        self.assertEqual(store.pending_build["issue"], 1)   # still queued
+        # bare build (number 0) starts the single pending one regardless
+        self.assertTrue(start_pending_build(builds, tg, 42, logger, now=NOW, number=0))
+        self.assertEqual(spawned, [1])
+
     def test_start_with_nothing_pending_falls_through(self):
         store = _store()
         builds = BuildGate(store, FakeGitHost(), "/tmp", spawn=lambda *a: 1)
@@ -229,15 +249,37 @@ class CommissionTest(unittest.TestCase):
 
     def test_start_while_running_refuses(self):
         store, host = _store(), FakeGitHost()
-        builds = BuildGate(store, host, "/tmp", spawn=lambda *a: 5)
+        spawned = []
+        builds = BuildGate(store, host, "/tmp",
+                           spawn=lambda n, d: spawned.append(n) or 5,
+                           alive=lambda pid: True)          # running is live
         logger, _ = _logger()
         commission_build(builds, parse_build(BLOCK)[0], logger, now=NOW)
         tg = FakeTelegram()
         start_pending_build(builds, tg, 42, logger, now=NOW)
-        # Queue + start a second: while one runs, the gate refuses.
-        store.pending_build = {"issue": 2, "title": "t", "spec": "s", "queued_at": "x"}
+        # Queue a second: while one runs (alive), the gate refuses, spawns nothing.
+        store.queue_build({"issue": 2, "title": "t", "spec": "s", "queued_at": "x"})
         self.assertTrue(start_pending_build(builds, tg, 42, logger, now=NOW))
         self.assertIn("running — wait", tg.sent[-1]["text"])
+        self.assertEqual(spawned, [1])                       # only the first
+
+    def test_dead_running_build_is_finished_then_pending_starts(self):
+        # A completed build (dead pid) must not block the next one forever.
+        store, host = _store(), FakeGitHost()
+        spawned = []
+        builds = BuildGate(store, host, "/tmp",
+                           spawn=lambda n, d: spawned.append(n) or 7,
+                           alive=lambda pid: False)         # prior build finished
+        store.run_build({"issue": 1, "pid": 999, "started_at": "x"})
+        store.queue_build({"issue": 2, "title": "t", "spec": "s", "queued_at": "x"})
+        logger, buf = _logger()
+        tg = FakeTelegram()
+        self.assertTrue(start_pending_build(builds, tg, 42, logger, now=NOW))
+        self.assertEqual(spawned, [2])
+        self.assertEqual(store.running_build["issue"], 2)
+        kinds = [e["event"] for e in _events(buf)]
+        self.assertIn("build_finished", kinds)
+        self.assertIn("build_started", kinds)
 
     def test_cancel_pending_only_clears(self):
         store, host = _store(), FakeGitHost()
@@ -255,27 +297,21 @@ class CommissionTest(unittest.TestCase):
         self.assertIsNone(cancel_pending_build(builds, FakeTelegram(), 42, _logger()[0]))
 
     def test_cancel_kills_a_running_pid(self):
+        # Seams faked: no real process. `alive` reports the running build live,
+        # `kill` records the pid the cancel would signal.
         store, host = _store(), FakeGitHost()
-        killed = {}
-
-        # A live child: spawn a real, harmless, long-ish sleep in its own session.
-        import subprocess
-        import sys
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
-                                start_new_session=True)
-        try:
-            builds = BuildGate(store, host, "/tmp", spawn=lambda *a: proc.pid)
-            logger, _ = _logger()
-            commission_build(builds, parse_build(BLOCK)[0], logger, now=NOW)
-            start_pending_build(builds, FakeTelegram(), 42, logger, now=NOW)
-            self.assertTrue(pid_alive(proc.pid))
-            cancel_pending_build(builds, FakeTelegram(), 42, logger)
-            proc.wait(timeout=5)
-            self.assertIsNone(store.running_build)
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=5)
+        killed = []
+        builds = BuildGate(store, host, "/tmp", spawn=lambda n, d: 4321,
+                           alive=lambda pid: True, kill=killed.append)
+        logger, _ = _logger()
+        commission_build(builds, parse_build(BLOCK)[0], logger, now=NOW)
+        start_pending_build(builds, FakeTelegram(), 42, logger, now=NOW)
+        tg = FakeTelegram()
+        self.assertTrue(cancel_pending_build(builds, tg, 42, logger))
+        self.assertEqual(killed, [4321])                    # the pgroup was signalled
+        self.assertIsNone(store.running_build)
+        self.assertIsNone(store.pending_build)
+        self.assertIn("cancelled", tg.sent[0]["text"])
 
 
 # --- dead-pid recovery ----------------------------------------------------------

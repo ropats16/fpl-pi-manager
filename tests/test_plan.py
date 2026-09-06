@@ -200,6 +200,24 @@ class ApprovalStoreTest(unittest.TestCase):
         s.reset_for(13)
         self.assertEqual((s.gw, s.phase, s.draft_sent), (13, "idle", False))
 
+    def test_reset_for_preserves_commissioning_build_state(self):
+        # A new-GW brief wake resets the plan machine but must NOT drop a queued
+        # build or orphan a running pid (they live on their own event clock).
+        s = ApprovalStore(self.path)
+        s.set_pending(12, _plan())
+        s.pending_build = {"issue": 9, "title": "t", "spec": "s", "queued_at": "x"}
+        s.running_build = {"issue": 8, "pid": 4321, "started_at": "y"}
+        s.save()
+        s.reset_for(13)
+        self.assertEqual(s.phase, "idle")
+        self.assertIsNone(s.pending_plan)
+        self.assertEqual(s.pending_build["issue"], 9)      # queued build survives
+        self.assertEqual(s.running_build["pid"], 4321)     # running pid survives
+        # persisted across the reset
+        again = ApprovalStore(self.path).load()
+        self.assertEqual(again.pending_build["issue"], 9)
+        self.assertEqual(again.running_build["pid"], 4321)
+
 
 # --- record_decision --------------------------------------------------------
 

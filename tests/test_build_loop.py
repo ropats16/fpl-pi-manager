@@ -39,10 +39,11 @@ class BuildLoopTest(unittest.TestCase):
         self.host = FakeGitHost()
         self.spawned = []
 
-    def _builds(self, host="default"):
+    def _builds(self, host="default", alive=lambda pid: False):
         host = self.host if host == "default" else host
         return BuildGate(self.store, host, self.tmp,
-                         spawn=lambda n, d: (self.spawned.append((n, d)), 4321)[1])
+                         spawn=lambda n, d: (self.spawned.append((n, d)), 4321)[1],
+                         alive=alive, kill=lambda pid: None)
 
     def _run(self, text, llm_reply, builds=None, approvals=None):
         fake = FakeTransport(
@@ -97,10 +98,20 @@ class BuildLoopTest(unittest.TestCase):
         self.assertIn("build #7 started", fake.sent[0]["text"])
 
     def test_build_while_running_refuses(self):
-        self.store.run_build({"issue": 3, "pid": os.getpid(), "started_at": "x"})
-        fake = self._run("build #3", "never", builds=self._builds())
+        self.store.run_build({"issue": 3, "pid": 999, "started_at": "x"})
+        fake = self._run("build #3", "never",
+                         builds=self._builds(alive=lambda pid: True))
         self.assertEqual(self.spawned, [])
         self.assertIn("running — wait", fake.sent[0]["text"])
+
+    def test_build_number_mismatch_is_refused(self):
+        self.store.queue_build({"issue": 13, "title": "t", "spec": "s",
+                                "queued_at": "x"})
+        fake = self._run("build #12", "never", builds=self._builds())
+        self.assertEqual(fake.llm_requests, [])            # no model call
+        self.assertEqual(self.spawned, [])                 # #13 not started
+        self.assertIn("no pending build #12", fake.sent[0]["text"])
+        self.assertEqual(self.store.load().pending_build["issue"], 13)
 
     def test_cancel_build_clears_pending(self):
         self.store.queue_build({"issue": 2, "title": "t", "spec": "s", "queued_at": "x"})

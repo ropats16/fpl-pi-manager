@@ -137,7 +137,7 @@ def run_daemon(env=None, out=None):
     # Dead-pid recovery (spec §3): a pull-reload restart killed a running build —
     # clear it and ping Rohit to retry. Runs after Telegram is constructed.
     recover_builds(approvals.store, telegram, cfg.allowlist, logger)
-    builds = BuildGate(approvals.store, host, _data_dir(env), logger=logger)
+    builds = BuildGate(approvals.store, host, _data_dir(env))
     run(cfg, telegram, llm, logger, assembler=assembler, approvals=approvals,
         learnings=learnings, proposer=proposer, builds=builds)
     return 0
@@ -701,41 +701,55 @@ def run_build_cmd(args, env=None, transport=None, out=None, host=None):
     transport = UrllibTransport() if transport is None else transport
     telegram, llm, logger = build_stack(cfg, transport, out)
     host = build_git_host(cfg, REPO_ROOT) if host is None else host
-    if host is None:
-        out.write("build: no GitHub token configured — cannot fetch the issue\n")
-        return 1
-    try:
-        title, body = host.issue_body(n)
-    except Exception as e:                # noqa: BLE001 — a bad issue is a clean fail
-        logger.event("build_error", issue=n, reason=f"{type(e).__name__}: {e}")
-        out.write(f"build: cannot fetch issue #{n}: {e}\n")
-        return 1
+    # This is the running build (the gate set `running_build` before spawning
+    # us). Clear it on the way out — success or failure — so the gate is never
+    # stuck refusing the next build with a stale `running_build`.
+    store = ApprovalStore(_approval_state_path(env))
 
-    # The engineer (PR 3) provides daemon.engineer.run_build; until then this
-    # command is a stub that fails cleanly so the whole gate is exercisable now.
-    try:
-        from daemon import engineer as engineer_mod
-    except ImportError:
-        engineer_mod = None
-    if engineer_mod is None or not hasattr(engineer_mod, "run_build"):
-        status, pr_url, cost, reason = "error", None, 0.0, "engineer not wired"
-    else:
-        res = engineer_mod.run_build(n, title, body, cfg, host, llm, logger, env=env)
-        status, pr_url, cost, reason = (res.status, res.pr_url, res.cost_usd,
-                                        res.reason)
+    def clear_running():
+        store.load()
+        if store.running_build and store.running_build.get("issue") == n:
+            store.clear_running_build()
 
-    if status == "error":
-        for chat_id in sorted(cfg.allowlist):
-            try:
-                telegram.send_message(chat_id=chat_id,
-                                      text=f"❌ build #{n} failed: {reason}")
-            except Exception as e:        # noqa: BLE001 — a lost ping is logged only
-                logger.event("build_ping_error", chat_id=chat_id,
-                             error=type(e).__name__, detail=str(e))
-    out.write(f"build: issue={n} status={status} pr={pr_url or '—'} "
-              f"cost=${cost:.4f}"
-              + (f" reason={reason}" if reason else "") + "\n")
-    return 0 if status == "ok" else 1
+    try:
+        if host is None:
+            out.write("build: no GitHub token configured — cannot fetch the issue\n")
+            return 1
+        try:
+            title, body = host.issue_body(n)
+        except Exception as e:            # noqa: BLE001 — a bad issue is a clean fail
+            logger.event("build_error", issue=n, reason=f"{type(e).__name__}: {e}")
+            out.write(f"build: cannot fetch issue #{n}: {e}\n")
+            return 1
+
+        # The engineer (PR 3) provides daemon.engineer.run_build; until then this
+        # command is a stub that fails cleanly so the whole gate is exercisable now.
+        try:
+            from daemon import engineer as engineer_mod
+        except ImportError:
+            engineer_mod = None
+        if engineer_mod is None or not hasattr(engineer_mod, "run_build"):
+            status, pr_url, cost, reason = "error", None, 0.0, "engineer not wired"
+        else:
+            res = engineer_mod.run_build(n, title, body, cfg, host, llm, logger,
+                                         env=env)
+            status, pr_url, cost, reason = (res.status, res.pr_url, res.cost_usd,
+                                            res.reason)
+
+        if status == "error":
+            for chat_id in sorted(cfg.allowlist):
+                try:
+                    telegram.send_message(chat_id=chat_id,
+                                          text=f"❌ build #{n} failed: {reason}")
+                except Exception as e:    # noqa: BLE001 — a lost ping is logged only
+                    logger.event("build_ping_error", chat_id=chat_id,
+                                 error=type(e).__name__, detail=str(e))
+        out.write(f"build: issue={n} status={status} pr={pr_url or '—'} "
+                  f"cost=${cost:.4f}"
+                  + (f" reason={reason}" if reason else "") + "\n")
+        return 0 if status == "ok" else 1
+    finally:
+        clear_running()
 
 
 def run_propose_cmd(args, env=None, transport=None, out=None, host=None):

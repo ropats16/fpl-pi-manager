@@ -31,6 +31,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+# The child `-m daemon build N` must start from the repo root, not whatever cwd
+# the systemd service happens to have.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # The single `⚠` line each degrade path appends to the (stripped) reply.
 NO_HOST_REPLY = "⚠ builds need the GitHub token on this box"
 
@@ -154,7 +158,11 @@ def path_allowed(rel):
     """True iff `rel` is a tier-1-writable repo path the engineer may write.
     Denies absolutes, `..`, dotfiles/dotdirs (`.github/` included), the engineer
     role file, and anything outside the writable set (deploy/, data/, fixtures/,
-    season-state.json, agent/memory/, agent/reports/, …)."""
+    season-state.json, agent/memory/, agent/reports/, …).
+
+    Lexical only: it cannot see a symlink that resolves out of the workspace, so
+    PR 3's `write_file` MUST additionally realpath the resolved destination and
+    confirm it stays under the workspace root before writing."""
     if not rel or os.path.isabs(rel) or "\\" in rel:
         return False
     parts = rel.split("/")
@@ -173,22 +181,22 @@ def path_allowed(rel):
 
 # --- spawn / pid ----------------------------------------------------------------
 
-def spawn_build(n, data_dir, argv0=None, popen=None):
+def spawn_build(n, data_dir, popen=None):
     """Spawn `python3 -m daemon build N` detached (its own session, so a
-    `cancel build` can signal the whole group) with stdout+stderr → the
-    gitignored `data/work/build-N.log`. Returns the child pid. `argv0` and
-    `popen` are injectable so a test can assert the argv without forking."""
-    argv0 = sys.executable if argv0 is None else argv0
+    `cancel build` can signal the whole group), rooted at REPO_ROOT, inheriting
+    the service env, with stdout+stderr → the gitignored `data/work/build-N.log`.
+    Returns the child pid. `popen` is injectable so a test can assert the argv
+    without forking."""
     popen = subprocess.Popen if popen is None else popen
     work = os.path.join(data_dir, "work")
     os.makedirs(work, exist_ok=True)
     logpath = os.path.join(work, f"build-{n}.log")
-    argv = [argv0, "-m", "daemon", "build", str(n)]
+    argv = [sys.executable, "-m", "daemon", "build", str(n)]
     # The `with` closes the parent's copy of the fd right after fork; the child
     # keeps its own dup — no ResourceWarning under `-W error::ResourceWarning`.
     with open(logpath, "ab") as logf:
         p = popen(argv, start_new_session=True, stdout=logf,
-                  stderr=subprocess.STDOUT, env=os.environ.copy())
+                  stderr=subprocess.STDOUT, cwd=REPO_ROOT)
     return p.pid
 
 
@@ -206,22 +214,30 @@ def pid_alive(pid):
     return True
 
 
+def killpg_term(pid):
+    """SIGTERM the whole process group led by `pid` (spawn_build makes the child
+    a session leader, so its pgid == pid). The default `BuildGate.kill`."""
+    os.killpg(pid, signal.SIGTERM)
+
+
 # --- the gate handle + operations ----------------------------------------------
 
 class BuildGate:
     """What the reply loop is wired with to commission builds (spec §3): the
     shared ApprovalStore (build state lives beside the plan state), the git host
     that opens issues (None → a "no token" reply), the data dir the engineer's
-    log is spawned into, and an injectable spawner for tests."""
+    log is spawned into, and the spawn/alive/kill seams (injectable so the whole
+    gate runs in tests with no real process)."""
 
-    __slots__ = ("store", "host", "data_dir", "spawn", "logger")
+    __slots__ = ("store", "host", "data_dir", "spawn", "alive", "kill")
 
-    def __init__(self, store, host, data_dir, spawn=None, logger=None):
+    def __init__(self, store, host, data_dir, spawn=None, alive=None, kill=None):
         self.store = store
         self.host = host
         self.data_dir = data_dir
         self.spawn = spawn or spawn_build
-        self.logger = logger
+        self.alive = alive or pid_alive
+        self.kill = kill or killpg_term
 
 
 def commission_build(builds, request, logger, now=None):
@@ -256,19 +272,33 @@ def commission_build(builds, request, logger, now=None):
     return f'🔧 build #{number} queued — say "build #{number}" to start'
 
 
-def start_pending_build(builds, telegram, chat_id, logger, now=None):
-    """The `build` / `build #N` gate: spawn the single pending build, or refuse
-    while one is already running. Returns True when it replied, None when there
-    is nothing pending (the caller falls the message through to the model)."""
+def start_pending_build(builds, telegram, chat_id, logger, now=None, number=0):
+    """The `build` / `build #N` gate: spawn the single pending build. `number` is
+    the N the user typed (0 for a bare `build`); a non-zero N that does not match
+    the pending build is refused, so `build #12` never starts a pending #13. A
+    running build whose pid is dead is treated as finished (cleared) before we
+    proceed — otherwise a completed build would block the next one forever.
+    Returns True when it replied, None when there is nothing to start (falls
+    through to the model)."""
     store = builds.store
-    if store.running_build:
-        m = store.running_build["issue"]
-        telegram.send_message(chat_id, f'⛔ build #{m} running — wait or "cancel build"')
-        return True
+    running = store.running_build
+    if running:
+        if builds.alive(running.get("pid")):
+            m = running["issue"]
+            telegram.send_message(
+                chat_id, f'⛔ build #{m} running — wait or "cancel build"')
+            return True
+        # Dead pid = finished (the daemon saw no completion in between).
+        logger.event("build_finished", issue=running.get("issue"),
+                     pid=running.get("pid"))
+        store.clear_running_build()
     pending = store.pending_build
     if not pending:
         return None
     num = pending["issue"]
+    if number and number != num:
+        telegram.send_message(chat_id, f"⛔ no pending build #{number}")
+        return True
     now = now or datetime.now(timezone.utc)
     pid = builds.spawn(num, builds.data_dir)
     store.run_build({"issue": num, "pid": pid,
@@ -287,9 +317,9 @@ def cancel_pending_build(builds, telegram, chat_id, logger):
     if not pending and not running:
         return None
     num = (running or pending)["issue"]
-    if running and pid_alive(running["pid"]):
+    if running and builds.alive(running.get("pid")):
         try:
-            os.killpg(running["pid"], signal.SIGTERM)
+            builds.kill(running["pid"])
         except OSError as e:          # noqa: BLE001 — a race with exit is fine
             logger.event("build_kill_error", issue=num, detail=str(e))
     store.cancel_build()

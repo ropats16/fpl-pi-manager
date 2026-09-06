@@ -4,9 +4,11 @@ the chats, exit 1. Bad invocation is exit 2; an unfetchable issue is exit 1."""
 
 import io
 import os
+import tempfile
 import unittest
 
 from daemon.__main__ import run_build_cmd
+from daemon.plan import ApprovalStore
 from daemon.propose import FakeGitHost
 from tests.fakes import FakeTransport
 
@@ -36,6 +38,21 @@ class RunBuildCmdTest(unittest.TestCase):
         self.assertEqual(run_build_cmd(["notanumber"], env=ENV,
                                        transport=FakeTransport(), out=out,
                                        host=FakeGitHost()), 2)
+
+    def test_running_build_is_cleared_on_exit(self):
+        # The gate set running_build before spawning us; the child clears it on
+        # the way out (success or failure) so the gate is not stuck refusing the
+        # next build even with no chat in between.
+        tmp = tempfile.mkdtemp(prefix="build-cmd-")
+        env = dict(ENV, GAFFER_APPROVAL_STATE_PATH=os.path.join(tmp, "approval.json"))
+        store = ApprovalStore(env["GAFFER_APPROVAL_STATE_PATH"])
+        host = FakeGitHost()
+        n, _ = host.open_issue("T", "body")
+        store.run_build({"issue": n, "pid": 4321, "started_at": "x"})
+        run_build_cmd([str(n)], env=env, transport=FakeTransport(),
+                      out=io.StringIO(), host=host)          # stub-fails
+        self.assertIsNone(ApprovalStore(env["GAFFER_APPROVAL_STATE_PATH"])
+                          .load().running_build)
 
     def test_unfetchable_issue_is_exit_1(self):
         out = io.StringIO()
