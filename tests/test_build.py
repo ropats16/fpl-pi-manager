@@ -249,7 +249,8 @@ class CommissionTest(unittest.TestCase):
 
     # 2026-09-06: issues #78/#79 were opened by hand (gh), not by a gaffer build
     # block, so `build #78` hit "no pending build" — Rohit's explicit `build #N`
-    # for any open issue on the host is authorization enough (one at a time).
+    # for any issue the host knows (open or closed: he named it) is authorization
+    # enough, one at a time.
     def test_start_named_open_issue_with_nothing_pending_spawns(self):
         store, host = _store(), FakeGitHost()
         n, _ = host.open_issue("Refresh projections", "spec…", labels=["gaffer", "build"])
@@ -273,6 +274,22 @@ class CommissionTest(unittest.TestCase):
         self.assertIn("no such issue #404", tg.sent[0]["text"])
         self.assertEqual(spawned, [])
         self.assertIsNone(store.running_build)
+
+    def test_host_error_on_lookup_is_not_reported_as_no_such_issue(self):
+        class SlowHost(FakeGitHost):
+            def issue_body(self, n):
+                raise TimeoutError("gh hung")
+        store = _store()
+        spawned = []
+        builds = BuildGate(store, SlowHost(), "/tmp",
+                           spawn=lambda k, d: spawned.append(k) or 7)
+        tg = FakeTelegram()
+        logger, buf = _logger()
+        self.assertTrue(start_pending_build(builds, tg, 42, logger, now=NOW, number=9))
+        self.assertIn("could not look up issue #9", tg.sent[0]["text"])
+        self.assertNotIn("no such issue", tg.sent[0]["text"])
+        self.assertEqual(spawned, [])
+        self.assertEqual(_events(buf)[-1]["event"], "build_refused")
 
     def test_start_named_issue_without_a_host_says_so(self):
         store = _store()
