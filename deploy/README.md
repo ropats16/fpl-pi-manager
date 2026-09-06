@@ -361,6 +361,8 @@ child of the chat service (same user, env and sandbox). A `*.py` merge that pass
 the self-test triggers `systemctl restart fpl-gaffer`, which **kills any running
 build** — its workspace under `data/work/build-N/` is left for post-mortem but the
 PR is not opened. This is the known v1 limit: nothing gates the pull timer while a
-build runs. Just say `build #N` again to restart it (the branch push is
-force-with-lease, so a re-run updates its own `gaffer/build-N` branch). On the next
-daemon start `recover_builds` clears the dead build and pings you to retry.
+build runs. Just say `build #N` again to restart it (the branch push is a plain
+`--force` on the build's own `gaffer/build-N` namespace, so a re-run overwrites it
+cleanly — a bare `--force-with-lease` would reject the retry off the fresh
+single-branch clone). On the next daemon start `recover_builds` clears the dead
+build and pings you to retry.

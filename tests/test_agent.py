@@ -176,6 +176,28 @@ class CapTest(AgentHarness):
         self.assertGreater(res.cost_usd, 0)
 
 
+class StopHookTest(AgentHarness):
+    def test_stop_ends_the_loop_before_the_next_call(self):
+        # `stop()` flips true after the first turn: the loop must end with status
+        # `stopped` and NOT consume the queued second tool call (spec §4 engineer
+        # hard-stop on a spent fix budget).
+        state = {"turns": 0, "done": False}
+
+        def bump(**kw):
+            state["done"] = True     # the tool run flags "stop next time"
+            return "ran"
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {}, "c1"),
+            tool_call_message("lookup", {}, "c2"), "unreached"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup", fn=bump)], CAPS, logger, role="gaffer",
+                        stop=lambda: state["done"])
+        self.assertEqual(res.status, "stopped")
+        self.assertEqual(res.turns, 1)                 # stopped before the 2nd call
+        self.assertEqual(len(t.llm_requests), 1)
+
+
 class ErrorTest(AgentHarness):
     def test_llm_error_never_raises_and_sets_error_status(self):
         class Down:

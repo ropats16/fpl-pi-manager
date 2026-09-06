@@ -62,6 +62,18 @@ class RunBuildCmdTest(unittest.TestCase):
         self.assertIn("reason=no changes", out)
         self.assertEqual(sent[0]["text"], f"❌ build #{n} failed: no changes")
 
+    def test_build_spend_lands_in_the_mtd_ledger(self):
+        from daemon.ledger import Ledger
+        tmp = tempfile.mkdtemp(prefix="build-ledger-")
+        env = dict(ENV, GAFFER_DATA_DIR=tmp)
+        host = FakeGitHost()
+        n, _ = host.open_issue("T", "body")
+        res = engineer.BuildResult(status="green", pr_url="u", cost_usd=0.0123)
+        run_build_cmd([str(n)], env=env, transport=FakeTransport(), out=io.StringIO(),
+                      host=host, run_build=_fake_build(res))
+        ledger = Ledger(os.path.join(tmp, "spend-ledger.json"))
+        self.assertAlmostEqual(ledger.total(), 0.0123, places=6)
+
     def test_bad_invocation_is_exit_2(self):
         out = io.StringIO()
         self.assertEqual(run_build_cmd([], env=ENV, transport=FakeTransport(),

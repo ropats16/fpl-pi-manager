@@ -336,8 +336,32 @@ class FakeGitHost:
                                                        "*.pyc"))
         self.clones.append({"dest": dest, "branch": branch})
 
-    def push_branch(self, workdir, branch, message):
-        self.pushes.append({"workdir": workdir, "branch": branch, "message": message})
+    def status_paths(self, workdir):
+        """The workspace's changed/added paths vs the cloned source — the offline
+        stand-in for `git status --porcelain` (spec §5 real-tree re-check).
+        `.git`/`__pycache__`/`*.pyc` are ignored as the repo's .gitignore does."""
+        def _read(p):
+            try:
+                with open(p, "rb") as fh:
+                    return fh.read()
+            except OSError:
+                return None
+        changed = []
+        for dirpath, dirs, files in os.walk(workdir):
+            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+            for fn in files:
+                if fn.endswith(".pyc"):
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, fn), workdir)
+                src = os.path.join(self.clone_source, rel)
+                if _read(os.path.join(dirpath, fn)) != _read(src):
+                    changed.append(rel)
+        return sorted(changed)
+
+    def push_branch(self, workdir, branch, message, paths=None):
+        self.pushes.append({"workdir": workdir, "branch": branch,
+                            "message": message,
+                            "paths": sorted(paths) if paths else None})
 
     def create_pr(self, branch, title, body, draft=False):
         if self.fail:
@@ -505,17 +529,36 @@ class GhGitHost:
                    f"https://github.com/{self.repo}.git", dest])
         self._cmd(["git", "checkout", "-b", branch], cwd=dest)
 
-    def push_branch(self, workdir, branch, message):
-        """Stage everything, commit under the gaffer identity, push HEAD to
-        `refs/heads/<branch>` over HTTPS (force-with-lease so a re-run of the
-        same build updates its own branch, never someone else's)."""
-        self._cmd(["git", "add", "-A"], cwd=workdir)
+    def status_paths(self, workdir):
+        """The worktree's changed/added paths (`git status --porcelain`), so the
+        caller can re-check the REAL tree against the ACL (spec §5) — not just the
+        files a tool claims to have written. Rename entries yield the new path."""
+        out = self._cmd(["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+                        cwd=workdir)
+        paths = []
+        for rec in out.split("\0"):
+            # "XY <path>": a real entry has the 2-char code then a space at [2].
+            # A rename's trailing old-path field (no such prefix) is skipped.
+            if len(rec) < 4 or rec[2] != " ":
+                continue
+            paths.append(rec[3:])
+        return paths
+
+    def push_branch(self, workdir, branch, message, paths=None):
+        """Stage the given paths (all already ACL-cleared by the caller — never a
+        blanket `-A`), commit under the gaffer identity, and push HEAD to
+        `refs/heads/<branch>` over HTTPS. Plain `--force`: the branch namespace
+        is `gaffer/build-N`, ours by construction, so a retry of the same build
+        overwrites its own branch (a bare `--force-with-lease` would reject the
+        retry — the fresh single-branch clone has no remote-tracking ref for it)."""
+        add = ["git", "add", "--", *paths] if paths else ["git", "add", "-A"]
+        self._cmd(add, cwd=workdir)
         self._cmd(["git", "-c", f"user.name={self.author[0]}",
                    "-c", f"user.email={self.author[1]}",
                    "commit", "--quiet", "-m", message], cwd=workdir)
         self._cmd(["git", "-c", "credential.helper=", "-c",
                    f"credential.helper={_CRED_HELPER}", "push", "--quiet",
-                   "--force-with-lease",
+                   "--force",
                    f"https://github.com/{self.repo}.git",
                    f"HEAD:refs/heads/{branch}"], cwd=workdir)
 

@@ -12,7 +12,7 @@ import fpl_api
 from datetime import datetime, timezone
 
 from daemon.actuator import ManualApplyActuator
-from daemon.agent import Caps, Tool
+from daemon.agent import Tool
 from daemon.brief import next_deadline, run_brief
 from daemon import engineer
 from daemon.build import BuildGate, recover_builds
@@ -817,6 +817,9 @@ def run_build_cmd(args, env=None, transport=None, out=None, host=None,
                         engineer.REPO_RULES, logger)
         status, pr_url, cost, reason = (res.status, res.pr_url, res.cost_usd,
                                         res.reason)
+        # A build spends real money too: fold it into the MTD ledger like a
+        # helper run does (#56), so the month's bill reflects builds.
+        build_ledger(cfg, env).add(cost, source="engineer")
         if status == "green":
             ping(f"✅ build #{n} → PR {pr_url}")
         elif status == "red":
@@ -1069,7 +1072,7 @@ def _selftest_engineer(cfg):
     _, llm, logger = build_stack(cfg, transport, logbuf)
     res = engineer.run_build(
         engineer.Issue(n, title, spec), host, llm, cfg.helpers.models["engineer"],
-        Caps(turns=40, minutes=25, cost_usd=0.60), 2, data_dir,
+        load_build_caps({}), load_build_fix_turns({}), data_dir,
         engineer.REPO_RULES, logger,
         test_runner=lambda w, p: (True, "Ran 1 test in 0.001s\n\nOK"))
     events = [json.loads(l) for l in logbuf.getvalue().splitlines()]

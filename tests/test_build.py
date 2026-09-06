@@ -382,8 +382,16 @@ class FakeGitHostOpsTest(unittest.TestCase):
         host.clone(dest, "gaffer/build-1")
         self.assertTrue(os.path.exists(os.path.join(dest, "tests", "test_x.py")))
         self.assertEqual(host.clones[0], {"dest": dest, "branch": "gaffer/build-1"})
-        host.push_branch(dest, "gaffer/build-1", "TC window (#1)")
+        # status_paths sees a new file and a modified one, not the untouched tree.
+        self.assertEqual(host.status_paths(dest), [])
+        with open(os.path.join(dest, "new.py"), "w") as f:
+            f.write("x = 1\n")
+        with open(os.path.join(dest, "tests", "test_x.py"), "w") as f:
+            f.write("# changed\n")
+        self.assertEqual(host.status_paths(dest), ["new.py", "tests/test_x.py"])
+        host.push_branch(dest, "gaffer/build-1", "TC window (#1)", paths=["new.py"])
         self.assertEqual(host.pushes[0]["message"], "TC window (#1)")
+        self.assertEqual(host.pushes[0]["paths"], ["new.py"])
         url = host.create_pr("gaffer/build-1", "TC window", "the body", draft=True)
         self.assertTrue(url.endswith("/1"))
         self.assertTrue(host.build_prs[0]["draft"])
@@ -449,18 +457,26 @@ class GhGitHostOpsTest(unittest.TestCase):
         for _, env, _ in calls:                      # token only in the child env
             self.assertEqual(env["GH_TOKEN"], self.TOKEN)
 
-    def test_push_branch_adds_commits_and_pushes_head(self):
+    def test_push_branch_stages_only_given_paths_and_force_pushes(self):
         host, calls = self._host([])
-        host.push_branch("/tmp/wd", "gaffer/build-1", "TC window (#1)")
+        host.push_branch("/tmp/wd", "gaffer/build-1", "TC window (#1)",
+                         paths=["daemon/x.py", "tests/test_x.py"])
         argvs = [a for a, _, _ in calls]
-        self.assertTrue(any(a[:2] == ["git", "add"] for a in argvs))
-        self.assertTrue(any("commit" in a for a in argvs))
+        add = next(a for a in argvs if a[:2] == ["git", "add"])
+        self.assertEqual(add, ["git", "add", "--", "daemon/x.py", "tests/test_x.py"])
+        self.assertNotIn("-A", add)                  # never a blanket add
         push = next(a for a in argvs if "push" in a)
         self.assertIn("HEAD:refs/heads/gaffer/build-1", push)
+        self.assertIn("--force", push)               # plain force on our namespace
+        self.assertNotIn("--force-with-lease", push)
         commit = next(a for a in argvs if "commit" in a)
         self.assertIn("TC window (#1)", commit)      # message via -m, not on push
         for _, env, cwd in calls:
             self.assertEqual(cwd, "/tmp/wd")
+
+    def test_status_paths_parses_porcelain(self):
+        host, _ = self._host([("status", 0, "?? new.py\0 M daemon/x.py\0", "")])
+        self.assertEqual(host.status_paths("/tmp/wd"), ["new.py", "daemon/x.py"])
 
     def test_create_pr_uses_body_file_and_draft_flag(self):
         host, calls = self._host([

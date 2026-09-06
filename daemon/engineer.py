@@ -13,16 +13,31 @@ Guardrails (spec §5):
   mutator and is doubly checked — `build.path_allowed` (the tier-1 writable set)
   PLUS a realpath check that the resolved destination stays inside the workspace,
   so neither a `..` nor a symlink already in the tree can escape. A refused write
-  is a fixed tool result (counted as a turn, never a cap trip); nothing is written
-  and the diff can never carry a denied path.
-- after a red `run_tests` the engineer may fix at most `fix_turns` times; the next
-  red flips a tool-side switch that withholds further `write_file` and tells the
-  model to stop and summarise (spec §4).
+  is a fixed tool result (counted as a turn, never a cap trip).
+- BEFORE the push the REAL tree is re-checked (`host.status_paths`, a
+  `git status --porcelain`), not just the files a tool claims to have written: a
+  side-effect file (e.g. a test that drops `.github/workflows/x.yml`) that fails
+  `path_allowed` aborts the build, and only the ACL-cleared paths are staged
+  (`git add -- <paths>`, never a blanket `-A`).
+- after a red `run_tests` the engineer may fix at most `fix_turns` times (a "fix"
+  is a red run that follows at least one `write_file` since the previous red);
+  the next counted red flips a switch that withholds further `write_file` AND
+  hard-stops the loop (`run_agent`'s `stop=`), so it goes straight to finish
+  instead of spinning to the turns cap.
 
-Finish (spec §4): no file changed → `error "no changes"`; the diff is re-checked
-against the ACL (a denied path refuses the push); a final full `run_tests` decides
-green/red; then `host.push_branch` + `host.create_pr(draft=not green)`. Events:
-`build_start`, `build_tests` (green/red, n), `build_pr`, `build_fail`.
+The test child runs with a minimal explicit env (no service credentials) and its
+returned tail is scrubbed of every configured secret before it can reach the
+model, `res.tests_tail` or the PR body.
+
+**Accepted risk (spec §5, #10 tiers):** the writable set includes `daemon/`
+(so `build.py`'s own ACL lists) and `AGENTS.md` (whose head seeds this prompt) —
+a build could open a PR that widens the ACL or rewrites the rules, but it cannot
+merge, so a human review catches it before it lands.
+
+Finish (spec §4): nothing changed → `error "no changes"`; the diff is re-checked
+against the ACL; a final full `run_tests` decides green/red; then
+`host.push_branch` + `host.create_pr(draft=not green)`. Events: `build_start`,
+`build_tests` (green/red, n), `build_pr`, `build_fail`.
 """
 
 import glob as _glob
@@ -31,12 +46,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections import namedtuple
 from datetime import datetime, timezone
 
 from daemon.agent import Tool, run_agent
-from daemon.build import REPO_ROOT, path_allowed
+from daemon.build import (DENIED, REPO_ROOT, WRITABLE_DIRS, WRITABLE_FILES,
+                          path_allowed)
 from daemon.prompt import char_budget
 
 # The Pi's full suite is ~2s (spec §4); a 10-min ceiling is a runaway guard only.
@@ -45,6 +62,12 @@ READ_MAX_TOKENS = 4000          # a read is bounded so one big file can't blow c
 GREP_MAX_HITS = 60
 LIST_MAX = 400
 TESTS_TAIL_LINES = 60           # `run_tests` returns pass/fail + this many tail lines
+
+# The writable / denied set, described from build.py's own lists (one source of
+# truth — the ACL and the persona can never drift apart).
+_WRITABLE_DESC = ", ".join(list(WRITABLE_DIRS) + list(WRITABLE_FILES)
+                           + ["root *.py"]) + " (never agent/roles/engineer.md)"
+_DENIED_DESC = ", ".join(DENIED) + ", any dotfile, `..`, absolutes"
 
 # The repo rules that ride in the system prompt (spec §4). `run_build_cmd` passes
 # these as `repo_rules`; kept here so the persona and the rules live together.
@@ -58,17 +81,14 @@ REPO_RULES = (
     "- **The whole suite must be green.** Run it with `run_tests()` — that is "
     "`python3 -W error::ResourceWarning -m unittest discover -s tests -t .`.\n"
     "- **Smallest diff** that satisfies the issue. Read a file before you edit it.\n"
-    "- You may write ONLY inside the writable set: `daemon/`, `tests/`, "
-    "`agent/roles/` (except `engineer.md`), `agent/playbooks/`, `docs/`, `plans/`, "
-    "`README.md`, `AGENTS.md`, root `*.py`. Every other path is denied and a "
-    "`write_file` there is refused.\n"
+    f"- You may write ONLY inside the writable set: {_WRITABLE_DESC}. Every other "
+    f"path is denied ({_DENIED_DESC}) and a `write_file` there is refused.\n"
     "- When the fix budget is spent, stop and summarise — do not keep editing.")
 
 # The fixed tool results (spec §4/§5). Refusals are counted as a turn, never a cap
 # trip; the fix-budget line withholds further writes.
-_DENIED = ("write_file refused: {rel} is outside the writable set (daemon/, "
-           "tests/, agent/roles/ except engineer.md, agent/playbooks/, docs/, "
-           "plans/, README.md, AGENTS.md, root *.py) — pick a writable path.")
+_DENIED_MSG = ("write_file refused: {rel} is outside the writable set "
+               f"({_WRITABLE_DESC}) — pick a writable path.")
 _ESCAPE = "write_file refused: {rel} resolves outside the workspace."
 _EXHAUSTED = ("write_file refused: the fix budget is spent — stop and summarise "
               "what you changed and why the tests still fail; no further edits "
@@ -80,7 +100,7 @@ Issue = namedtuple("Issue", "number title body")
 class BuildResult:
     """The outcome of one `run_build` (spec §4). `status` is green | red | error;
     `pr_url` is set for green/red; `reason` names an error; `tests_tail` is the
-    last lines of the final test run (for the ledger/receipt/PR body)."""
+    last (scrubbed) lines of the final test run."""
 
     __slots__ = ("status", "pr_url", "reason", "turns", "cost_usd", "tests_tail")
 
@@ -118,19 +138,37 @@ def _tail_lines(text, n):
     return "\n".join((text or "").splitlines()[-n:])
 
 
+def _build_test_env(workspace, home):
+    """A minimal, explicit env for the test child (spec §5): PATH, the workspace
+    on PYTHONPATH, an ephemeral HOME, and locale — and NOTHING inherited, so no
+    GitHub / OpenRouter / Telegram credential ever reaches an engineer-written
+    test."""
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PYTHONPATH": workspace,
+        "HOME": home,
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
+    }
+
+
 def _default_test_runner(workspace, paths):
     """Run the suite (or the given `paths`) in the workspace under
-    `-W error::ResourceWarning`; return (passed, tail-of-output). Injectable so
-    the test suite never forks a real subprocess (AGENTS.md rule)."""
+    `-W error::ResourceWarning` with a minimal env (no inherited secrets); return
+    (passed, tail-of-output). Injectable so the test suite never forks a real
+    subprocess (AGENTS.md rule)."""
+    home = tempfile.mkdtemp(prefix="build-home-")
     argv = [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest"]
     argv += list(paths) if paths else ["discover", "-s", "tests", "-t", "."]
     try:
         p = subprocess.run(argv, cwd=workspace, capture_output=True, text=True,
-                           timeout=TEST_TIMEOUT)
+                           timeout=TEST_TIMEOUT, env=_build_test_env(workspace, home))
         out = (p.stdout or "") + (p.stderr or "")
         return p.returncode == 0, _tail_lines(out, TESTS_TAIL_LINES)
     except subprocess.TimeoutExpired:
         return False, f"run_tests: timed out after {TEST_TIMEOUT}s"
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def _read_head(path, max_chars):
@@ -160,8 +198,8 @@ def _system_prompt(issue, repo_rules):
 
 
 def _pr_body(issue, tests_tail, turns, cost_usd, green):
-    """The PR body (spec §4): the spec, the test tail, turns/cost, and `Closes
-    #N` only when green (a draft red PR must not auto-close the issue)."""
+    """The PR body (spec §4): the spec, the (scrubbed) test tail, turns/cost, and
+    `Closes #N` only when green (a draft red PR must not auto-close the issue)."""
     lines = [
         f"Build of issue #{issue.number}: {issue.title}", "",
         "## Spec", "", (issue.body or "").strip(), "",
@@ -177,15 +215,18 @@ def _pr_body(issue, tests_tail, turns, cost_usd, green):
 
 def _new_state():
     """The per-build tool state shared across the workspace tools: which relpaths
-    were actually written, the running red/run counters, and the fix-budget
-    switch."""
-    return {"written": set(), "reds": 0, "runs": 0, "exhausted": False}
+    were written, the run/red counters, whether a write has landed since the last
+    red (so a fix is only counted once per real edit), and the fix-budget switch
+    (which also hard-stops the loop)."""
+    return {"written": set(), "reds": 0, "runs": 0, "wrote_since_red": False,
+            "exhausted": False}
 
 
-def _build_tools(issue, root, state, fix_turns, test_runner, logger):
+def _build_tools(issue, root, state, fix_turns, test_runner, logger, scrub=None):
     """The five workspace tools (spec §4), all rooted at `root` (the realpath of
-    the workspace). `root` is already a realpath so the containment check below is
-    a plain prefix test."""
+    the workspace). `scrub` redacts secrets from the test tail before it reaches
+    the model."""
+    scrub = scrub or (lambda t: t)
 
     def _resolve(rel):
         """(abspath, None) when `rel` resolves inside the workspace; (None, why)
@@ -224,6 +265,9 @@ def _build_tools(issue, root, state, fix_turns, test_runner, logger):
         dest, why = _resolve(rel)
         if why:
             return f"read_file refused: {rel} {why}."
+        rel_real = os.path.relpath(dest, root)
+        if rel_real == ".git" or rel_real.startswith(".git" + os.sep):
+            return f"read_file refused: {rel} is inside .git."
         if not os.path.isfile(dest):
             return f"read_file: no file at {rel}."
         try:
@@ -265,7 +309,7 @@ def _build_tools(issue, root, state, fix_turns, test_runner, logger):
         if state["exhausted"]:
             return _EXHAUSTED
         if not path_allowed(rel):
-            return _DENIED.format(rel=rel)
+            return _DENIED_MSG.format(rel=rel)
         dest, why = _resolve(rel)
         if why:
             return _ESCAPE.format(rel=rel)
@@ -276,21 +320,29 @@ def _build_tools(issue, root, state, fix_turns, test_runner, logger):
         except OSError as e:
             return f"write_file: {type(e).__name__}: {e}"
         state["written"].add(rel)
+        state["wrote_since_red"] = True     # a red run after this counts as a fix
         return f"wrote {rel} ({len(content or '')} bytes)."
 
     def run_tests(paths=None, **_):
         plist = _norm_paths(paths)
         passed, tail = test_runner(root, plist)
+        tail = scrub(tail)
         state["runs"] += 1
         logger.event("build_tests", issue=issue.number,
                      result="green" if passed else "red", n=state["runs"])
         if passed:
             return "run_tests: GREEN — all tests passed.\n\n" + tail
+        if not state["wrote_since_red"]:
+            # A red run with no intervening edit is the same failure — do not spend
+            # a fix on it; tell the engineer to actually change something.
+            return ("run_tests: RED (no file changed since the last run — edit a "
+                    "file, then re-run).\n\n" + tail)
         state["reds"] += 1
+        state["wrote_since_red"] = False
         if state["reds"] > fix_turns:
-            state["exhausted"] = True
+            state["exhausted"] = True       # withholds writes AND hard-stops the loop
             return (f"run_tests: RED. The fix budget ({fix_turns}) is spent — stop "
-                    "and summarise; no further write_file will be accepted.\n\n" + tail)
+                    "and summarise; no further edits will be accepted.\n\n" + tail)
         return (f"run_tests: RED (fix {state['reds']} of {fix_turns} — read the "
                 "failure, make the smallest fix, and re-run).\n\n" + tail)
 
@@ -332,6 +384,7 @@ def run_build(issue, host, llm, model, caps, fix_turns, data_dir, repo_rules,
     """Build issue #N end to end (spec §4). Returns a BuildResult; never raises."""
     clock = clock or (lambda: datetime.now(timezone.utc))
     test_runner = test_runner or _default_test_runner
+    scrub = getattr(logger, "scrub", None) or (lambda t: t)
     res = BuildResult()
     n = issue.number
     branch = f"gaffer/build-{n}"
@@ -358,29 +411,38 @@ def run_build(issue, host, llm, model, caps, fix_turns, data_dir, repo_rules,
 
         root = os.path.realpath(workspace)
         state = _new_state()
-        tools = _build_tools(issue, root, state, fix_turns, test_runner, logger)
+        tools = _build_tools(issue, root, state, fix_turns, test_runner, logger,
+                             scrub=scrub)
         messages = [
             {"role": "system", "content": _system_prompt(issue, repo_rules)},
             {"role": "user", "content": f"Implement issue #{n}. Add tests first."},
         ]
+        # The spent fix budget hard-stops the loop (spec §4): no read/grep/run_tests
+        # spinning on to the turns cap once there is nothing left to write.
         agent = run_agent(messages, llm, model, tools, caps, logger,
-                          role="engineer", clock=clock)
+                          role="engineer", clock=clock,
+                          stop=lambda: state["exhausted"])
         res.turns = agent.turns
         res.cost_usd = agent.cost_usd
 
-        # No file changed → nothing to open a PR on.
-        if not state["written"]:
+        # Re-check the REAL worktree against the ACL, not just tool-claimed writes:
+        # a side-effect file the tools never saw must not ride to the branch.
+        try:
+            tree = host.status_paths(workspace)
+        except Exception as e:              # noqa: BLE001 — a status fail is a clean error
+            return fail(f"status check failed: {type(e).__name__}: {e}")
+        if not tree:
             return fail("no changes")
-        # Re-check the diff against the ACL: a denied path refuses the push.
-        denied = sorted(p for p in state["written"] if not path_allowed(p))
+        denied = sorted(p for p in tree if not path_allowed(p))
         if denied:
-            return fail(f"denied path in diff: {denied[0]}")
+            return fail(f"denied path in tree: {denied[0]}")
 
         # A final full-suite run decides green vs red.
         try:
             passed, tail = test_runner(root, None)
         except Exception as e:              # noqa: BLE001 — a runner blow-up is a clean error
             return fail(f"final run_tests failed: {type(e).__name__}: {e}")
+        tail = scrub(tail)
         res.tests_tail = tail
         logger.event("build_tests", issue=n, result="green" if passed else "red",
                      n=state["runs"] + 1, final=True)
@@ -388,7 +450,7 @@ def run_build(issue, host, llm, model, caps, fix_turns, data_dir, repo_rules,
         title = issue.title
         body = _pr_body(issue, tail, agent.turns, agent.cost_usd, green=passed)
         try:
-            host.push_branch(workspace, branch, f"{title} (#{n})")
+            host.push_branch(workspace, branch, f"{title} (#{n})", paths=tree)
             pr_url = host.create_pr(branch, title, body, draft=not passed)
         except Exception as e:              # noqa: BLE001 — a push/PR fail is a clean error
             return fail(f"push/PR failed: {type(e).__name__}: {e}")

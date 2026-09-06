@@ -25,7 +25,14 @@ class StructuredLogger:
         rec = {"ts": self._clock(), "event": event}
         rec.update(fields)
         line = json.dumps(rec, ensure_ascii=False, default=str)
-        for secret in self._secrets:
-            line = line.replace(secret, "[REDACTED]")
-        self._stream.write(line + "\n")
+        self._stream.write(self.scrub(line) + "\n")
         self._stream.flush()
+
+    def scrub(self, text):
+        """Replace every configured secret with [REDACTED] — the same guard
+        `event` applies, exposed so a caller can scrub free text (e.g. a
+        subprocess tail) before it reaches the model, a result field or a PR
+        body (#10 §3)."""
+        for secret in self._secrets:
+            text = text.replace(secret, "[REDACTED]")
+        return text

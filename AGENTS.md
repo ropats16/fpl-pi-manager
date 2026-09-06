@@ -344,10 +344,23 @@ It **never raises**: a clone/push/PR or any other failure is a clean
 `build_fail`; ledger role `engineer`; model `GAFFER_HELPER_MODEL_ENGINEER`
 (default the flash `HELPER_MODEL`). The git host gains `clone` / `push_branch` /
 `create_pr` (`git`/`gh` subprocesses, token only in the child env, scrubbed);
-`FakeGitHost.clone` copies a source tree so the whole path runs offline. Selftest
-adds `engineer=PASS` (one write + one green `run_tests` → push → PR); harness is
-`tests/test_engineer.py` + the host ops in `tests/test_build.py` + receipts in
-`tests/test_build_cmd.py`.
+`FakeGitHost.clone` copies a source tree so the whole path runs offline. Before
+the push the REAL worktree is re-checked (`host.status_paths`, a `git status
+--porcelain`) so a side-effect file the tools never saw cannot ride the branch,
+and only ACL-cleared paths are staged (`git add -- <paths>`, never `-A`); the
+push is a plain `--force` on the `gaffer/build-N` namespace (ours by
+construction — a bare `--force-with-lease` would reject a retry off the fresh
+single-branch clone). The test child runs with a minimal explicit env (no
+inherited credentials) and its tail is secret-scrubbed before it reaches the
+model/PR body. **Accepted risk:** the writable set includes `daemon/build.py`
+(the ACL lists) and `AGENTS.md` (whose head seeds the engineer prompt) — a build
+could open a PR that widens the ACL or rewrites the rules, but merge is human, so
+review catches it before it lands. Note too that adding `engineer` to
+`HELPER_ROLES` makes it a `gaffer_tools.READABLE_ROLES` entry (`read_report
+engineer`) — harmless, the engineer never writes a GW report, so that read is
+always empty. Selftest adds `engineer=PASS` (one write + one green `run_tests` →
+push → PR); harness is `tests/test_engineer.py` + the host ops in
+`tests/test_build.py` + receipts in `tests/test_build_cmd.py`.
 
 ## Season state (single source of truth)
 
