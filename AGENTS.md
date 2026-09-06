@@ -298,9 +298,8 @@ one running, at a time; merge is never automatic. A pull-reload restart kills a
 running build (known limit): on the next daemon start `recover_builds` clears the
 dead pid and pings `⚠ build #N died with the daemon restart — say "build #N" to
 retry`. `daemon build N` loads config, fetches the issue body via the host and
-hands it to the on-Pi **engineer** (`daemon.engineer.run_build`, PR 3); until
-that lands it is a clean stub (`❌ build #N failed: engineer not wired`, exit 1).
-The tier-1 **path ACL** (`build.path_allowed`, spec §5) bounds what a build may
+hands it to the on-Pi **engineer** (`daemon.engineer.run_build`, below). The
+tier-1 **path ACL** (`build.path_allowed`, spec §5) bounds what a build may
 write — `daemon/`, `tests/`, `agent/roles/*` (not `engineer.md`),
 `agent/playbooks/`, `docs/`, `plans/`, `README.md`, `AGENTS.md`, root `*.py`;
 everything else (`deploy/`, `.github/`, `season-state.json`, `agent/memory/`,
@@ -308,6 +307,47 @@ everything else (`deploy/`, `.github/`, `season-state.json`, `agent/memory/`,
 The git host gains `open_issue` / `issue_status` / `issue_body` / `pr_status`
 (via `gh`, token only in the child env, scrubbed). Harness is `tests/test_build.py`
 + `tests/test_build_loop.py` + `tests/test_build_cmd.py`.
+
+### Engineer (build jobs) (spec §4–6)
+
+`daemon/engineer.py` `run_build(issue, host, llm, model, caps, fix_turns,
+data_dir, repo_rules, logger, clock=None, test_runner=None) -> BuildResult`
+turns one approved ticket into one PR, on the Pi, and it cannot merge. It
+`host.clone`s origin/main into a throwaway `data/work/build-N/` on a fresh
+`gaffer/build-N` branch (`prune_work(days=7)` clears stale workspaces first),
+then runs a bounded `run_agent` loop (spec §1) whose system prompt is
+`agent/roles/engineer.md` + the head of AGENTS.md + the repo rules (stdlib only,
+TDD, the test command) + the issue, with the user task *"Implement issue #N. Add
+tests first."* Five tools, all rooted at the workspace: `list_files`, `read_file`,
+`grep`, `write_file`, `run_tests`. `write_file` is the only mutator and is doubly
+guarded — `build.path_allowed` PLUS a **realpath** check that the resolved
+destination stays inside the workspace, so neither a `..` nor a symlink already in
+the tree can escape; a refused write is a fixed tool result (counted as a turn,
+never a cap trip) and nothing is written. `run_tests` runs `python3 -W
+error::ResourceWarning -m unittest discover -s tests -t .` (or the given paths,
+10-min timeout) and returns pass/fail + the last 60 lines; after a red run the
+engineer may fix at most `GAFFER_BUILD_FIX_TURNS` (2) times — the next red flips a
+switch that withholds further `write_file` and tells it to summarise. The loop
+caps are tier-1 config (`GAFFER_BUILD_MAX_TURNS=40` / `MAX_MINUTES=25` /
+`MAX_COST_USD=0.60`).
+
+**Finish:** no file changed → `error "no changes"`; the diff is re-checked against
+the ACL (a denied path refuses the push); a final full `run_tests` decides
+green/red; then `host.push_branch(workdir, "gaffer/build-N", "<title> (#N)")` and
+`host.create_pr(branch, title, body, draft=not green)`. The PR body is the spec +
+the test tail + turns/cost, with `Closes #N` **only when green**. `daemon build N`
+turns the BuildResult into the Telegram receipt — `✅ build #N → PR <url>` /
+`🟥 build #N red → draft PR <url>` / `❌ build #N failed: <reason>` — prints
+`build: issue=N status=… pr=… cost=$…`, and exits 0 for green/red, 1 for error.
+It **never raises**: a clone/push/PR or any other failure is a clean
+`error` BuildResult. Events `build_start` / `build_tests` / `build_pr` /
+`build_fail`; ledger role `engineer`; model `GAFFER_HELPER_MODEL_ENGINEER`
+(default the flash `HELPER_MODEL`). The git host gains `clone` / `push_branch` /
+`create_pr` (`git`/`gh` subprocesses, token only in the child env, scrubbed);
+`FakeGitHost.clone` copies a source tree so the whole path runs offline. Selftest
+adds `engineer=PASS` (one write + one green `run_tests` → push → PR); harness is
+`tests/test_engineer.py` + the host ops in `tests/test_build.py` + receipts in
+`tests/test_build_cmd.py`.
 
 ## Season state (single source of truth)
 
