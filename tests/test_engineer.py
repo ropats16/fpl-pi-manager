@@ -284,5 +284,95 @@ class RunBuildTest(_Base):
         self.assertIn("clone failed", res.reason)
 
 
+# --- hardening after live build #78 (PR #80, 2026-09-06) ---------------------------
+# The first live engineer never wrote an implementation: it used run_tests as a
+# file-reading harness (an atexit dump of daemon/brief.py into tests/_d*.txt, to
+# dodge the read_file cap) and shipped only that harness. Three rails close it.
+
+
+class PagedReadTest(_Base):
+    def _ws(self, lines=300):
+        ws = tempfile.mkdtemp(prefix="eng-ws-")
+        os.makedirs(os.path.join(ws, "daemon"))
+        with open(os.path.join(ws, "daemon", "big.py"), "w") as f:
+            f.write("".join(f"line{i}\n" for i in range(1, lines + 1)))
+        return ws
+
+    def test_default_read_is_the_first_page_with_a_continuation_hint(self):
+        tools, _ = self._tools(self._ws())
+        out = tools["read_file"].fn(path="daemon/big.py")
+        self.assertTrue(out.startswith("line1\n"))
+        self.assertIn(f"line{engineer.READ_MAX_LINES}\n", out)
+        self.assertNotIn(f"line{engineer.READ_MAX_LINES + 1}\n", out)
+        self.assertIn(f"start_line={engineer.READ_MAX_LINES + 1}", out)   # how to page
+        self.assertIn("of 300", out)
+
+    def test_start_line_and_max_lines_page_through_a_big_file(self):
+        tools, _ = self._tools(self._ws())
+        out = tools["read_file"].fn(path="daemon/big.py", start_line=201, max_lines=50)
+        self.assertTrue(out.startswith("line201\n"))
+        self.assertIn("line250\n", out)
+        self.assertNotIn("line251\n", out)
+        self.assertIn("start_line=251", out)
+        last = tools["read_file"].fn(path="daemon/big.py", start_line=251)
+        self.assertIn("line300\n", last)
+        self.assertNotIn("start_line=", last)                            # no more pages
+        self.assertIn("past the end", tools["read_file"].fn(path="daemon/big.py",
+                                                            start_line=400))
+
+    def test_small_file_reads_whole_with_no_hint(self):
+        tools, _ = self._tools(self._ws(lines=5))
+        out = tools["read_file"].fn(path="daemon/big.py")
+        self.assertEqual(out, "".join(f"line{i}\n" for i in range(1, 6)))
+
+
+class NoScratchTest(_Base):
+    def test_write_file_refuses_non_python_under_tests(self):
+        ws = tempfile.mkdtemp(prefix="eng-ws-")
+        os.makedirs(os.path.join(ws, "tests"))
+        tools, state = self._tools(ws)
+        wf = tools["write_file"].fn
+        for bad in ("tests/_d1.txt", "tests/dump.json", "tests/notes.md"):
+            out = wf(path=bad, content="x")
+            self.assertIn("refused", out, bad)
+            self.assertIn("scratch", out, bad)
+            self.assertFalse(os.path.exists(os.path.join(ws, bad)), bad)
+        self.assertIn("wrote", wf(path="tests/test_new.py", content="import unittest\n"))
+        self.assertEqual(state["written"], {"tests/test_new.py"})
+
+
+class FinishGateTest(_Base):
+    _build = RunBuildTest.__dict__["_build"]      # the harness, not its tests
+
+    def test_tests_only_diff_is_refused_as_no_implementation(self):
+        replies = [
+            tool_call_message("write_file",
+                              {"path": "tests/test_marker.py",
+                               "content": "import unittest\n"}, "w1"),
+            tool_call_message("run_tests", {}, "t1"),
+            "done."]
+        res, host, _, n, _ = self._build(replies, lambda w, p: (True, "OK"))
+        self.assertEqual(res.status, "error")
+        self.assertIn("tests only", res.reason)
+        self.assertEqual(host.pushes, [])
+        self.assertEqual(host.build_prs, [])
+
+    def test_scratch_file_left_by_a_test_aborts_the_push(self):
+        def dumper(workspace, paths):
+            with open(os.path.join(workspace, "tests", "_d1.txt"), "w") as f:
+                f.write("chunk\n")
+            return True, "OK"
+        replies = [
+            tool_call_message("write_file",
+                              {"path": "fpl_marker.py", "content": "VERSION = 1\n"}, "w1"),
+            tool_call_message("run_tests", {}, "t1"),
+            "done."]
+        res, host, _, n, _ = self._build(replies, dumper)
+        self.assertEqual(res.status, "error")
+        self.assertIn("scratch file", res.reason)
+        self.assertIn("tests/_d1.txt", res.reason)
+        self.assertEqual(host.pushes, [])
+
+
 if __name__ == "__main__":
     unittest.main()

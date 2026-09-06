@@ -59,6 +59,7 @@ from daemon.prompt import char_budget
 # The Pi's full suite is ~2s (spec §4); a 10-min ceiling is a runaway guard only.
 TEST_TIMEOUT = 600
 READ_MAX_TOKENS = 4000          # a read is bounded so one big file can't blow context
+READ_MAX_LINES = 200            # …and paged: read_file(path, start_line=, max_lines=)
 GREP_MAX_HITS = 60
 LIST_MAX = 400
 TESTS_TAIL_LINES = 60           # `run_tests` returns pass/fail + this many tail lines
@@ -80,9 +81,16 @@ REPO_RULES = (
     "test.\n"
     "- **The whole suite must be green.** Run it with `run_tests()` — that is "
     "`python3 -W error::ResourceWarning -m unittest discover -s tests -t .`.\n"
-    "- **Smallest diff** that satisfies the issue. Read a file before you edit it.\n"
+    "- **Smallest diff** that satisfies the issue. Read a file before you edit it "
+    "— `read_file` is paged (`start_line`, `max_lines`); page through a big file, "
+    "never copy it anywhere.\n"
     f"- You may write ONLY inside the writable set: {_WRITABLE_DESC}. Every other "
     f"path is denied ({_DENIED_DESC}) and a `write_file` there is refused.\n"
+    "- **No scratch files.** Under `tests/` only `*.py` test modules are accepted, "
+    "and a test must test the feature — a test that dumps, copies or prints "
+    "source is not a test. A build whose diff touches only `tests/` (no "
+    "implementation) is refused at the finish line, as is any non-.py file left "
+    "under `tests/`.\n"
     "- When the fix budget is spent, stop and summarise — do not keep editing.")
 
 # The fixed tool results (spec §4/§5). Refusals are counted as a turn, never a cap
@@ -90,6 +98,26 @@ REPO_RULES = (
 _DENIED_MSG = ("write_file refused: {rel} is outside the writable set "
                f"({_WRITABLE_DESC}) — pick a writable path.")
 _ESCAPE = "write_file refused: {rel} resolves outside the workspace."
+_SCRATCH_MSG = ("write_file refused: {rel} — only *.py test modules may be written "
+                "under tests/; no scratch, dump or data files (live build #78 "
+                "shipped a tests/_d*.txt file-reading harness instead of code).")
+
+
+def scratch_in_tests(paths):
+    """The first path under tests/ that is not a *.py module, or None. A test
+    that writes such a file (a source dump, a chunk, a data file) is the #80
+    exploit; the finish line refuses the whole build on it."""
+    for p in sorted(paths):
+        if p.startswith("tests/") and not p.endswith(".py"):
+            return p
+    return None
+
+
+def tests_only(paths):
+    """True when every changed path lives under tests/ — a build with no
+    implementation (the #80 shape) is refused at the finish line."""
+    paths = list(paths)
+    return bool(paths) and all(p.startswith("tests/") for p in paths)
 _EXHAUSTED = ("write_file refused: the fix budget is spent — stop and summarise "
               "what you changed and why the tests still fail; no further edits "
               "will be accepted.")
@@ -258,10 +286,15 @@ def _build_tools(issue, root, state, fix_turns, test_runner, logger, scrub=None)
         extra = "" if len(rels) <= LIST_MAX else f"\n…(+{len(rels) - LIST_MAX} more)"
         return "\n".join(rels[:LIST_MAX]) + extra
 
-    def read_file(path=None, **_):
+    def read_file(path=None, start_line=None, max_lines=None, **_):
         rel = (path or "").strip()
         if not rel:
             return "read_file: give a path."
+        try:
+            start = max(1, int(start_line or 1))
+            span = max(1, min(int(max_lines or READ_MAX_LINES), READ_MAX_LINES))
+        except (TypeError, ValueError):
+            return "read_file: start_line and max_lines must be integers."
         dest, why = _resolve(rel)
         if why:
             return f"read_file refused: {rel} {why}."
@@ -272,13 +305,23 @@ def _build_tools(issue, root, state, fix_turns, test_runner, logger, scrub=None)
             return f"read_file: no file at {rel}."
         try:
             with open(dest, encoding="utf-8", errors="replace") as f:
-                t = f.read()
+                lines = f.readlines()
         except OSError as e:
             return f"read_file: {type(e).__name__}: {e}"
+        total = len(lines)
+        if start > total:
+            return f"read_file: start_line={start} is past the end ({total} lines)."
+        page = "".join(lines[start - 1:start - 1 + span])
         budget = char_budget(READ_MAX_TOKENS)
-        if len(t) > budget:
-            return t[:budget] + f"\n…(truncated at ~{READ_MAX_TOKENS} tokens)"
-        return t
+        if len(page) > budget:
+            page = page[:budget] + f"\n…(page cut at ~{READ_MAX_TOKENS} tokens)"
+        end = min(start - 1 + span, total)
+        if start == 1 and end == total:
+            return page                                   # the whole file, no noise
+        hint = (f"\n…(lines {start}–{end} of {total}; call read_file(path, "
+                f"start_line={end + 1}) for the next page)" if end < total
+                else f"\n…(lines {start}–{end} of {total}; end of file)")
+        return page + hint
 
     def grep(pattern=None, glob=None, **_):
         pat = (pattern or "").strip()
@@ -310,6 +353,8 @@ def _build_tools(issue, root, state, fix_turns, test_runner, logger, scrub=None)
             return _EXHAUSTED
         if not path_allowed(rel):
             return _DENIED_MSG.format(rel=rel)
+        if scratch_in_tests([rel]):
+            return _SCRATCH_MSG.format(rel=rel)
         dest, why = _resolve(rel)
         if why:
             return _ESCAPE.format(rel=rel)
@@ -351,8 +396,13 @@ def _build_tools(issue, root, state, fix_turns, test_runner, logger, scrub=None)
              "'**/*.py'). Defaults to everything.",
              {"type": "object", "properties": {"glob": {"type": "string"}},
               "required": []}, list_files),
-        Tool("read_file", "Read one file in the workspace (bounded; truncated if large).",
-             {"type": "object", "properties": {"path": {"type": "string"}},
+        Tool("read_file", "Read one file in the workspace, paged: up to "
+             f"{READ_MAX_LINES} lines per call from start_line (default 1). A big "
+             "file tells you the next start_line — page through it, never copy it.",
+             {"type": "object", "properties": {
+                 "path": {"type": "string"},
+                 "start_line": {"type": "integer"},
+                 "max_lines": {"type": "integer"}},
               "required": ["path"]}, read_file),
         Tool("grep", "Search workspace files (glob defaults to '**/*.py') for a regex; "
              "returns matching path:line: text.",
@@ -436,6 +486,13 @@ def run_build(issue, host, llm, model, caps, fix_turns, data_dir, repo_rules,
         denied = sorted(p for p in tree if not path_allowed(p))
         if denied:
             return fail(f"denied path in tree: {denied[0]}")
+        # The #80 shape: a harness instead of a feature. No implementation, or a
+        # non-.py file under tests/ (a dump a test left behind), never ships.
+        scratch = scratch_in_tests(tree)
+        if scratch:
+            return fail(f"scratch file in tests: {scratch}")
+        if tests_only(tree):
+            return fail("tests only — no implementation in the diff")
 
         # A final full-suite run decides green vs red.
         try:

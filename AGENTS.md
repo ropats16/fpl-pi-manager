@@ -331,7 +331,15 @@ switch that withholds further `write_file` and tells it to summarise. The loop
 caps are tier-1 config (`GAFFER_BUILD_MAX_TURNS=40` / `MAX_MINUTES=25` /
 `MAX_COST_USD=0.60`).
 
-**Finish:** no file changed → `error "no changes"`; the diff is re-checked against
+`read_file` is **paged** (`start_line`, `max_lines`, 200 lines per call, the
+next `start_line` in the trailer) and `write_file` refuses any non-`*.py` path
+under `tests/` — both rails from live build #78 (PR #80, 2026-09-06), where the
+engineer, unable to read `daemon/brief.py` in one call, wrote a "test" that
+dumped the source into `tests/_d*.txt` on exit and shipped only that harness.
+
+**Finish:** no file changed → `error "no changes"`; a non-`*.py` file under
+`tests/` → `error "scratch file in tests: <p>"`; a diff touching only `tests/` →
+`error "tests only — no implementation in the diff"`; the diff is re-checked against
 the ACL (a denied path refuses the push); a final full `run_tests` decides
 green/red; then `host.push_branch(workdir, "gaffer/build-N", "<title> (#N)")` and
 `host.create_pr(branch, title, body, draft=not green)`. The PR body is the spec +
