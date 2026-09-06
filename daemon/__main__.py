@@ -509,8 +509,12 @@ def _refresh_for(env, logger, runner=None, clock=None):
     data dir, the pipeline scripts at REPO_ROOT, never raises."""
     from daemon.pipeline import refresh_projections
 
+    # The pipeline scripts live at the repo root; GAFFER_REPO_ROOT relocates
+    # them (a dev/test seam — the refresh insists data_dir == repo_root/data).
+    repo_root = env.get("GAFFER_REPO_ROOT", REPO_ROOT)
+
     def refresh():
-        return refresh_projections(REPO_ROOT, _data_dir(env), logger,
+        return refresh_projections(repo_root, _data_dir(env), logger,
                                    runner=runner, clock=clock)
     return refresh
 

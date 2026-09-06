@@ -105,6 +105,17 @@ def refresh_projections(repo_root, data_dir, logger, runner=None,
     proj = os.path.join(data_dir, "projections.csv")
     age = None
     try:
+        # fpl_projections.py hard-codes `./data` (cwd-relative), so the refresh
+        # only makes sense when data_dir IS repo_root/data — anything else would
+        # fetch into one dir and project into another, and the staleness check
+        # would watch a file the pipeline never rewrites (refresh every wake).
+        expected = os.path.realpath(os.path.join(repo_root, "data"))
+        if os.path.realpath(data_dir) != expected:
+            reason = (f"data_dir: {data_dir} is not {expected} — fpl_projections.py "
+                      "reads and writes ./data under repo_root")
+            logger.event("projections_refresh_error", step="data_dir", reason=reason)
+            return {"status": "error", "age_hours": None, "rows": _rows(proj),
+                    "reason": reason}
         age = _age_hours(proj, now)
         if age is not None and age < max_age_hours:
             return {"status": "fresh", "age_hours": age, "rows": _rows(proj),

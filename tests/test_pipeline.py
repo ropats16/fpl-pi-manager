@@ -237,6 +237,17 @@ class FailingStepTest(_Harness):
         self._assert_error(res, runner, "projections")
         self.assertEqual(len(runner.calls), 4)
 
+    def test_data_dir_elsewhere_is_refused_before_any_step(self):
+        # fpl_projections.py hard-codes ./data: a data_dir that is not
+        # repo_root/data would desync fetch and projections — refuse up front.
+        other = os.path.join(self.root, "elsewhere")
+        os.makedirs(other)
+        runner = FakeRunner()
+        res = refresh_projections(self.root, other, self.logger, runner=runner,
+                                  clock=lambda: NOW)
+        self._assert_error(res, runner, "data_dir")
+        self.assertEqual(runner.calls, [])
+
     def test_fetch_producing_no_snapshots_is_an_error(self):
         os.remove(self.boot)
         os.remove(self.fix)
@@ -273,6 +284,7 @@ class _CmdHarness(unittest.TestCase):
         e = {"GAFFER_ALLOWLIST_USER_IDS": "42",
              "TELEGRAM_BOT_TOKEN": "TT",
              "OPENROUTER_API_KEY": "KK",
+             "GAFFER_REPO_ROOT": self.d,          # data_dir must be repo_root/data
              "GAFFER_DATA_DIR": self.data}
         e.update(over)
         return e
