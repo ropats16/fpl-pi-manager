@@ -203,8 +203,7 @@ class Config:
                  github_token=None, github_repo=DEFAULT_GITHUB_REPO,
                  max_tokens=DEFAULT_MAX_TOKENS, chat_caps=None):
         self.max_tokens = max_tokens
-        self.chat_caps = chat_caps if chat_caps is not None else Caps(
-            **{k: v for k, v in DEFAULT_CHAT_CAPS.items()})
+        self.chat_caps = chat_caps if chat_caps is not None else Caps(**DEFAULT_CHAT_CAPS)
         self.allowlist = allowlist
         self.telegram_token = telegram_token
         self.openrouter_key = openrouter_key

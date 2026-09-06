@@ -244,19 +244,18 @@ def run_helper(role, llm, model, workspace_root, state_path, gw, fetcher, search
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": user_turn}]
     # The two helper tools as shared `Tool`s (spec §1): one object carries both the
-    # wire schema and the dispatch callable, capped at the per-helper ceiling. The
-    # helper keeps its own ceiling accounting below (per-tool-type caps + a write-up
-    # re-prompt), which the generic `run_agent` loop does not model — so these Tools
-    # are the shared internal, not a `run_agent` call.
+    # wire schema and the dispatch callable. The helper keeps its own ceiling
+    # accounting below (per-tool-type caps + a write-up re-prompt), which the
+    # generic `run_agent` loop does not model — so these Tools are the shared
+    # internal, not a `run_agent` call, and Tool.cap is left unset (the loop's
+    # `used[key] >= caps[key]` is authoritative here).
     helper_tools = []
     if fetch:
         helper_tools.append(("fetches", "url",
-            Tool.from_schema(FETCH_TOOL, lambda url: fetcher.fetch(url),
-                             cap=caps["fetches"])))
+            Tool.from_schema(FETCH_TOOL, lambda url: fetcher.fetch(url))))
     if search:
         helper_tools.append(("searches", "query",
-            Tool.from_schema(SEARCH_TOOL, lambda query: searcher.search(query, role=role),
-                             cap=caps["searches"])))
+            Tool.from_schema(SEARCH_TOOL, lambda query: searcher.search(query, role=role))))
     # None (not []) so `llm.chat(tools=None)` carries no `tools` key (#56).
     tools = [t.schema() for _, _, t in helper_tools] or None
     cap = None

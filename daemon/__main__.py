@@ -12,10 +12,12 @@ import fpl_api
 from datetime import datetime, timezone
 
 from daemon.actuator import ManualApplyActuator
+from daemon.agent import Tool
 from daemon.brief import next_deadline, run_brief
 from daemon.build import BuildGate, recover_builds
 from daemon.config import Config, load_config, load_notify_config
 from daemon.fanout import ANALYSTS, Fanout
+from daemon.gaffer_tools import build_gaffer_tools
 from daemon.helper import REPORT_CAP_TOKENS, ROLE_FILES, run_helper
 from daemon.http import FakeTransport, UrllibTransport, tool_call_message
 from daemon.learnings import LearningsLog
@@ -26,7 +28,7 @@ from daemon.loop import poll_once, run
 from daemon.plan import ApprovalGate, ApprovalStore
 from daemon.prompt import Assembler, estimate_tokens
 from daemon.propose import FakeGitHost, Proposal, make_proposer, run_propose
-from daemon.reports import ReportWriter, read_scout_log, scout_entries
+from daemon.reports import ReportWriter, read_scout_log, scout_entries, strip_header
 from daemon.review import ReviewStore, run_review
 from daemon.runtime import build_git_host, build_helper_tools, build_stack
 from daemon.sync import SeasonSync
@@ -118,11 +120,62 @@ def _clock_from(now):
     return lambda: now + (datetime.now(timezone.utc) - real_start)
 
 
+# An `ask_helper` runs one seat inside a 6-min chat cap, so its ceilings are far
+# below a standalone helper's (15 min / 40 turns) — spec §2 is a quick question,
+# not a full analyst dig.
+ASK_HELPER_CAPS = {"turns": 10, "minutes": 4, "searches": 3, "fetches": 5}
+
+
+def build_chat_tools_factory(cfg, env, transport, llm, logger, host=None,
+                             ledger=None, now=None):
+    """A per-message factory of the gaffer's chat tools (spec §2/§4). Built fresh
+    each wake so the FPL fetch cache does not go stale across days; the gameweek
+    is the season-state current_gw. `host` (a GhGitHost, else None) wires the
+    ticket/PR tools. The MTD ledger gates search exactly as the fan-out does: at
+    "search off" the chat loses `search` and an ask runs fetch-only. `ask_helper`
+    runs the real `run_helper` for the role with `task=question` (reduced ask
+    caps) into a throwaway, auto-cleaned report folder — so it never clobbers a
+    fan-out's write-once report — and returns the body text; the gaffer_tools
+    layer files the answer as a Q&A section on the real report."""
+    def factory():
+        gw = _current_gw(_state_path(env))
+        fetcher, searcher = build_helper_tools(cfg, transport, llm, logger)
+        # MTD ledger gate (spec §2, like #56): "search off" withholds search and
+        # runs an ask fetch-only; a full/None ledger keeps both.
+        search_on = ledger is None or ledger.mode(now) == "full"
+
+        def helper_runner(role, question):
+            with tempfile.TemporaryDirectory(prefix="gaffer-ask-") as tmp:
+                writer = ReportWriter(os.path.join(tmp, "reports"), gw, logger=logger,
+                                      cap_tokens=REPORT_CAP_TOKENS.get(role, 1000))
+                res = run_helper(role, llm, cfg.helpers.models.get(role, cfg.model),
+                                 _workspace_dir(env), _state_path(env), gw, fetcher,
+                                 searcher, writer, ASK_HELPER_CAPS, logger,
+                                 projections_path=_projections_path(env),
+                                 search=search_on, fetch=(role != "am"),
+                                 task=question)
+                if res.path and os.path.exists(res.path):
+                    with open(res.path, encoding="utf-8") as fh:
+                        return strip_header(fh.read())
+                return f"({role} unavailable: {res.reason or res.status})"
+
+        # gw None (missing/corrupt state): do not offer the seat/report tools that
+        # need a gameweek — a run_helper with gw=None would TypeError after spend.
+        reports = _reports_dir(env) if gw is not None else None
+        runner = helper_runner if gw is not None else None
+        return build_gaffer_tools(cfg, _workspace_dir(env), _state_path(env),
+                                  reports, _projections_path(env), gw, fetcher,
+                                  searcher if search_on else None, runner, host,
+                                  logger=logger)
+    return factory
+
+
 def run_daemon(env=None, out=None):
     out = sys.stderr if out is None else out
     env = os.environ if env is None else env
     cfg = load_config(env)
-    telegram, llm, logger = build_stack(cfg, UrllibTransport(), out)
+    transport = UrllibTransport()
+    telegram, llm, logger = build_stack(cfg, transport, out)
     approval_path = _approval_state_path(env)
     approvals = ApprovalGate(ApprovalStore(approval_path),
                              reports_dir=_reports_dir(env))
@@ -130,16 +183,22 @@ def run_daemon(env=None, out=None):
     # The diary the reply loop appends to (#20) is the same file the assembler
     # reads, so a lesson recorded on one wake is on the table for the next.
     learnings = LearningsLog(_learnings_path(env), state_path=_state_path(env))
-    # #55 / spec §3: one git host serves both the propose path and the build
-    # path (real git/gh runner when the token is provisioned; None otherwise).
+    # #55 / spec §3: one git host serves the propose path, the build path AND the
+    # gaffer's chat ticket tools (real git/gh runner when the token is provisioned;
+    # None otherwise — the ticket/PR tools are then simply not offered).
     host = build_git_host(cfg, REPO_ROOT)
     proposer = make_proposer(host, logger)
     # Dead-pid recovery (spec §3): a pull-reload restart killed a running build —
     # clear it and ping Rohit to retry. Runs after Telegram is constructed.
     recover_builds(approvals.store, telegram, cfg.allowlist, logger)
     builds = BuildGate(approvals.store, host, _data_dir(env))
+    # The gaffer's chat tools (spec §2), the same host wired for open_ticket /
+    # ticket_status / pr_status; the MTD ledger gates its search like the fan-out.
+    tools_factory = build_chat_tools_factory(cfg, env, transport, llm, logger,
+                                             host=host, ledger=build_ledger(cfg, env))
     run(cfg, telegram, llm, logger, assembler=assembler, approvals=approvals,
-        learnings=learnings, proposer=proposer, builds=builds)
+        learnings=learnings, proposer=proposer, builds=builds,
+        tools_factory=tools_factory)
     return 0
 
 
@@ -262,11 +321,19 @@ def run_selftest(out=None):
     logbuf = io.StringIO()
     telegram, llm, logger = build_stack(cfg, transport, logbuf)
 
+    # Wire a fake chat tool (spec §4): the canned replies never call it, so the
+    # reply text is byte-identical — but the run_agent tool-loop path is exercised
+    # offline, and offering tools proves it does not disturb the grounded prompt.
+    fake_tool = Tool("noop", "a no-op chat tool for the offline selftest",
+                     {"type": "object", "properties": {}, "required": []},
+                     lambda **kw: "noop")
+
     before = len(learnings.entries())
     offset = 0
     for _ in turns:
         offset = poll_once(cfg, telegram, llm, logger, offset,
-                           assembler=assembler, learnings=learnings)
+                           assembler=assembler, learnings=learnings,
+                           tools_factory=lambda: [fake_tool])
 
     events = [json.loads(l) for l in logbuf.getvalue().splitlines()]
     kinds = {e["event"] for e in events}

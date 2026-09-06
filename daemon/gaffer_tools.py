@@ -22,6 +22,7 @@ overwrite, an append is allowed (spec §2).
 import csv
 import os
 from datetime import datetime, timezone
+from http.client import HTTPException
 
 from daemon.agent import Tool
 from daemon.config import HELPER_ROLES
@@ -33,6 +34,10 @@ from daemon.tools import FETCH_TOOL, SEARCH_TOOL
 # The engineer (PR 3) is not a chat seat — it builds tickets, it does not answer
 # questions — so it is never an `ask_helper` target.
 ASKABLE_ROLES = tuple(r for r in HELPER_ROLES if r != "engineer")
+# Every role whose report the gaffer may read — the seats plus the Scout log.
+# read_report joins this into a path, so it MUST be validated against this set
+# (a model-chosen `role` like "../../GAFFER" must never escape the GW folder).
+READABLE_ROLES = frozenset(HELPER_ROLES)
 
 _FPL_API = "https://fantasy.premierleague.com/api"
 BOOTSTRAP_URL = f"{_FPL_API}/bootstrap-static/"
@@ -59,7 +64,7 @@ def _head(text, max_tokens):
 
 
 def build_gaffer_tools(cfg, workspace_root, state_path, reports_dir, projections_path,
-                       gw, fetcher, searcher, helper_runner, host):
+                       gw, fetcher, searcher, helper_runner, host, logger=None):
     """Return the gaffer's chat tools (spec §2). Only the tools whose dependency
     is present are offered. Every `fn` returns a string and never raises (the
     run_agent loop turns a thrown tool into evidence, but these degrade first)."""
@@ -78,14 +83,19 @@ def build_gaffer_tools(cfg, workspace_root, state_path, reports_dir, projections
         text = helper_runner(role, question)
         section = f"### {_iso_now()} — {role} (asked)\n\n{text}"
         try:
-            ReportWriter(reports_dir, gw).append_section(role, section)
-        except (ReportRefused, OSError):
-            pass                    # the answer still returns; the log line is best-effort
+            ReportWriter(reports_dir, gw, logger=logger).append_section(role, section)
+        except (ReportRefused, OSError, TypeError, ValueError):
+            pass                    # the answer still returns; the append is best-effort
         return text
 
     # --- read_report --------------------------------------------------------------
     def read_report(role=None, gw=None, **_):
         role = (role or "").strip()
+        if role not in READABLE_ROLES:
+            # `role` is joined into a path below: reject anything but a known seat
+            # so "../../GAFFER" can never read outside the GW folder into context.
+            return (f"read_report: unknown role {role!r}; readable reports are "
+                    f"{', '.join(sorted(READABLE_ROLES))}.")
         g = _int_or(gw, wake_gw)
         if role == "scout":
             body = read_scout_log(reports_dir, g)
@@ -150,7 +160,7 @@ def build_gaffer_tools(cfg, workspace_root, state_path, reports_dir, projections
             return "fpl_lookup: give a name."
         try:
             boot = _bootstrap()
-        except (ValueError, OSError) as e:
+        except (ValueError, OSError, HTTPException) as e:
             return f"fpl_lookup: could not read the FPL bootstrap: {e}"
         teams = _team_by_id(boot)
         if kind == "player":
@@ -181,7 +191,7 @@ def build_gaffer_tools(cfg, workspace_root, state_path, reports_dir, projections
         tid = t.get("id")
         try:
             fixtures = fetcher.fetch_json(FIXTURES_URL)
-        except (ValueError, OSError) as e:
+        except (ValueError, OSError, HTTPException) as e:
             return f"fpl_lookup: could not read fixtures: {e}"
         lines = []
         for fx in fixtures or []:
