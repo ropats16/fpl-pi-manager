@@ -1,0 +1,170 @@
+    def tail(msg):
+        return f"{msg}\n\n{footer}" if footer else msg
+    approved = store.approved_plan
+    has_chip = bool(new_plan and new_plan.get("chip"))
+    # The final is where the last real decision is made: freeze the projections
+    # it was made on (act overwrites again at T−30m only if they moved).
+    _snapshot(projections_path, snapshot_dir, gw, logger)
+
+    if new_plan is None:
+        # Unverifiable final: no machine plan even after a retry. The carry-void
+        # diff (§3③) cannot run, so nothing may auto-lock — but the message must
+        # name the recovery path: without it, "fresh yes required" points at a
+        # `yes` that can't approve (pending is None) 2h before the deadline.
+        msg = (f"⚠ GW{gw} FINAL — no machine plan came back, so the approved "
+               "plan can't be verified and will NOT auto-lock. Ask me to "
+               "re-issue the plan, then reply yes.")
+        if not _send_all(telegram, allowlist, tail(msg), logger, gw):
+            return 1
+        store.void_carry(None)
+        store.final_sent = True
+        store.save()
+        logger.event("brief_final_sent", gw=gw, changed=True, has_plan=False)
+        return 0
+
+    unchanged = (approved is not None and new_plan is not None
+                 and not plans_differ(new_plan, approved) and not has_chip)
+    if unchanged:
+        msg = (f"GW{gw} FINAL — no change since your yes. Locking at T−30m. "
+               "Reply STOP to hold.")
+        if not _send_all(telegram, allowlist, tail(msg), logger, gw):
+            return 1
+        store.phase = "locked"
+        store.final_sent = True
+        store.save()
+        logger.event("brief_final_sent", gw=gw, changed=False)
+        return 0
+
+    # Changed, chip present, or nothing approved -> carry-void, fresh yes needed.
+    marker = ("chip plan — fresh yes required" if has_chip
+              else f"⚠ GW{gw} CHANGED — fresh yes required")
+    if not _send_all(telegram, allowlist, tail(f"{marker}\n\n{text}"), logger, gw):
+        return 1
+    store.void_carry(new_plan)
+    store.final_sent = True
+    store.save()
+    logger.event("brief_final_sent", gw=gw, changed=True)
+    return 0
+
+
+def _state_captain(state_path):
+    """The current captain's name from season state, for the no-write alert
+    (§3⑤ names the standing captain: '(C)=X'). Any read problem -> None — the
+    alert must fire regardless."""
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            state = json.load(f)
+        cid = state.get("captain")
+        for p in state.get("squad", {}).get("picks", []):
+            if p.get("id") == cid:
+                return p.get("name")
+    except Exception:                    # noqa: BLE001 — cosmetic, never blocking
+        pass
+    return None
+
+
+def _do_act(store, telegram, allowlist, logger, actuator, state_path, gw, now,
+            projections_path=None, snapshot_dir=None):
+    approved = store.approved_plan
+    if store.phase in ("approved", "locked") and approved is not None:
+        instructions = actuator.apply(approved, gw)
+        record_decision(state_path, gw, approved, "locked", now=now)
+        receipt = f"✅ GW{gw} locked: {plan_summary(approved)}"
+        # Overwrite the draft's snapshot with the copy closest to the deadline —
+        # the projections this locked call is actually being graded on (#21).
+        _snapshot(projections_path, snapshot_dir, gw, logger)
+        if not _send_all(telegram, allowlist, f"{instructions}\n\n{receipt}",
+                         logger, gw):
+            return 1
+        store.phase = "acted"
+        store.save()
+        logger.event("brief_acted", gw=gw)
+        return 0
+
+    # No valid approval at the act-moment: NO actuator call (§3⑤ no-write).
+    record_decision(state_path, gw, approved, "no_write", now=now)
+    cap = _state_captain(state_path)
+    msg = (f"⚠ GW{gw} locked with NO changes — no approval in time. "
+           f"Last team stands{f', (C) {cap}' if cap else ''}, FT banks.")
+    # A no-write still fielded a team; snapshot the projections it stood on (#21).
+    _snapshot(projections_path, snapshot_dir, gw, logger)
+    if not _send_all(telegram, allowlist, msg, logger, gw):
+        return 1
+    store.phase = "no_write"
+    store.save()
+    logger.event("brief_no_write", gw=gw)
+    return 0
+
+
+def run_brief(fetch, llm_complete, assembler_factory, store, telegram, allowlist,
+              logger, actuator, state_path, reports_dir, projections_path=None,
+              snapshot_dir=None, now=None, fanout=None, sync=None):
+    """One hourly wake. Returns a process exit code (0 ok, 1 the wake did not
+    complete). Every external edge is injected so the whole path runs offline in
+    tests — same seam posture as run_watch (#17).
+
+    `sync(gw)` (daemon.sync.SeasonSync.ensure) runs before a draft so the
+    season state is at the deadline's GW — the guard against drafting from a
+    stale squad; a failed sync is a warning line on the draft, never a lost
+    wake.
+
+    `fanout` (a daemon.fanout.Fanout, #56) makes the draft run the analysts and
+    the AM first and the final run a Scout delta; None keeps the single-call
+    brief (tests of the protocol itself).
+
+    When both `projections_path` and `snapshot_dir` are set, the draft and act
+    touchpoints freeze the GW's projection rows into
+    `<snapshot_dir>/projections-gwNN.csv` so the post-GW review (#21) can grade
+    the call against exactly what it was made on; a snapshot failure is logged,
+    never fatal."""
+    now = now or datetime.now(timezone.utc)
+    logger.event("brief_wake")
+    try:
+        events = fetch()
+    except Exception as e:               # noqa: BLE001 — a bad wake must not crash the timer
+        logger.event("brief_error", error=type(e).__name__, detail=str(e))
+        return 1
+
+    nd = next_deadline(events, now)
+    if nd is None:
+        logger.event("brief_quiet", reason="no_deadline")
+        return 0
+    gw, deadline = nd
+
+    st = store.load()
+    if st.gw != gw:                      # a new deadline cycle — clean idle state
+        store.reset_for(gw)
+        st = store
+
+    action = decide_wake(now, deadline, st)
+    if action is None:
+        logger.event("brief_quiet", gw=gw, phase=st.phase)
+        return 0
+
+    try:
+        if action == "draft":
+            warning = None
+            if sync is not None:
+                s = sync(gw)
+                if s.get("status") == "error":
+                    warning = (f"⚠ season state still at GW{s.get('from_gw')} — "
+                               f"sync failed: {s.get('reason')}")
+            return _do_draft(llm_complete, assembler_factory, store, telegram,
+                             allowlist, logger, gw, reports_dir, now,
+                             projections_path=projections_path,
+                             snapshot_dir=snapshot_dir, fanout=fanout,
+                             warning=warning)
+        if action == "final":
+            return _do_final(llm_complete, assembler_factory, store, telegram,
+                             allowlist, logger, gw,
+                             projections_path=projections_path,
+                             snapshot_dir=snapshot_dir, fanout=fanout, now=now)
+        return _do_act(store, telegram, allowlist, logger, actuator, state_path,
+                       gw, now, projections_path=projections_path,
+                       snapshot_dir=snapshot_dir)
+    except Exception as e:               # noqa: BLE001 — LLM/state error: retry next tick
+        # State is not advanced past this point on the failing action, so the
+        # next hourly tick re-attempts the same window (never lose a wake).
+        logger.event("brief_error", gw=gw, action=action,
+                     error=type(e).__name__, detail=str(e))
+        return 1

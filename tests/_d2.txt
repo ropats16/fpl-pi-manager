@@ -1,0 +1,200 @@
+    tools_factory = build_chat_tools_factory(cfg, env, transport, llm, logger,
+                                             host=host, ledger=ledger)
+    run(cfg, telegram, llm, logger, assembler=assembler, approvals=approvals,
+        learnings=learnings, proposer=proposer, builds=builds,
+        tools_factory=tools_factory, ledger=ledger)
+    return 0
+
+
+def _update(update_id, text):
+    return {
+        "update_id": update_id,
+        "message": {"message_id": update_id, "from": {"id": 42},
+                    "chat": {"id": 42, "type": "private"}, "text": text},
+    }
+
+
+# Turn 1 of the selftest: the canned analysis reply ends with the learnings block
+# the analysis playbook asks for — one specific, one general (#20).
+_SELFTEST_LEARNINGS_REPLY = (
+    "Same-club GK+DEF doubles pay only across a soft run — not a value play.\n\n"
+    "```learnings\n"
+    '{"specific": [{"lesson": "SELFTEST-LESSON an Arsenal GK+DEF double only '
+    'clears one premium mid against bottom-six attacks.", "evidence": "selftest '
+    'backtest, 2026-09-03 - 12 of 18 clean sheets came in that split."}],\n'
+    ' "general": [{"lesson": "A same-club defensive double is a fixture bet, not '
+    'a value bet - take it only across a run of soft opponents.", "evidence": '
+    '"selftest backtest, 2026-09-03 - held across 38 sampled club-weeks."}]}\n'
+    "```")
+
+
+_SELFTEST_FPL = "https://fantasy.premierleague.com/api/bootstrap-static/"
+_SELFTEST_REPORT = (
+    "**Haaland** — fit, full training (SELFTEST canned FFS team news, 2026-09-03). "
+    "Judgment: nailed.\n\n"
+    "wanted source: evil.example — a fan blog the search surfaced; not on the allowlist.\n\n"
+    "Coverage: checked FPL flags (official API) + FFS team news; searched Gordon, "
+    "found nothing.")
+
+
+def _selftest_helper(cfg):
+    """The #54 acceptance demo, offline: one availability analyst runs as a tool
+    loop through the fake transport — an allowlisted fetch, the same URL again
+    (served from cache), an off-allowlist fetch (refused before any request), a
+    web search, then the report — and writes one headed, write-once report into
+    a temp GW folder. Prints the report path, fetch/search counts, cost estimate
+    and PASS/FAIL. Returns (ok, lines)."""
+    tmp = tempfile.mkdtemp(prefix="gaffer-selftest-helper-")
+    gw = 4
+    transport = FakeTransport(
+        llm_replies=[tool_call_message("fetch", {"url": _SELFTEST_FPL}, "c1"),
+                     tool_call_message("fetch", {"url": _SELFTEST_FPL}, "c2"),
+                     tool_call_message("fetch", {"url": "https://evil.example/x"}, "c3"),
+                     tool_call_message("search", {"query": "Gordon knock Newcastle"}, "s1"),
+                     _SELFTEST_REPORT],
+        pages={_SELFTEST_FPL: '{"elements": [{"web_name": "Haaland", "status": "a"}]}'},
+        search_reply="1. Gordon fit — bbc.co.uk/sport/selftest — 2026-09-02",
+        usage={"prompt_tokens": 3000, "completion_tokens": 400})
+    logbuf = io.StringIO()
+    _, llm, logger = build_stack(cfg, transport, logbuf)
+    h = cfg.helpers
+    fetcher, searcher = build_helper_tools(cfg, transport, llm, logger)
+    writer = ReportWriter(os.path.join(tmp, "reports"), gw, logger=logger,
+                          cap_tokens=REPORT_CAP_TOKENS["availability"])
+    res = run_helper("availability", llm, h.models["availability"],
+                     os.path.join(REPO_ROOT, "agent"),
+                     os.path.join(REPO_ROOT, "season-state.json"), gw,
+                     fetcher, searcher, writer, h.caps, logger,
+                     projections_path=os.path.join(REPO_ROOT, "fixtures",
+                                                   "projections-sample.csv"))
+    events = [json.loads(l) for l in logbuf.getvalue().splitlines()]
+    kinds = {e["event"] for e in events}
+    gets = [u for m, u in transport.requests if m == "GET"]
+    written = bool(res.path) and os.path.exists(res.path)
+    text = ""
+    if written:
+        with open(res.path, encoding="utf-8") as f:
+            text = f.read()
+    headed = text.startswith("---\nrole: availability\n") and "status: ok" in text
+    one_request = gets == [_SELFTEST_FPL]           # cached repeat + refused domain = 1 GET
+    refused = not any("evil.example" in u for u in gets)
+    searched = len(transport.search_requests) == 1
+    costed = res.cost_usd > 0 and all("cost_usd" in e for e in events if e["event"] == "llm_call")
+    ok = (res.status == "ok" and written and headed and one_request and refused
+          and searched and costed and {"helper_start", "llm_call", "fetch",
+                                       "fetch_refused", "search", "report_written",
+                                       "helper_done"} <= kinds)
+    lines = [json.dumps(e) for e in events]
+    lines.append(f"helper: role=availability model={res.model} status={res.status} "
+                 f"report={res.path} fetches={res.fetches} requests={res.requests} "
+                 f"searches={res.searches} turns={res.turns} cost=${res.cost_usd:.5f} "
+                 f"one-request={one_request} off-allowlist-refused={refused}")
+    return ok, lines
+
+
+def run_selftest(out=None):
+    """Offline demo of the #16 + #20 acceptance paths in three wakes: a squad
+    question is answered from an assembled, grounded prompt; an ad-hoc analysis
+    records its learnings (block stripped before Telegram); the next question's
+    prompt provably recalls them. The real workspace + season state feed the
+    assembler; a committed projections fixture stands in for the pipeline's
+    gitignored output, and the committed learnings diary is copied to a tempdir
+    so the demo never grows the repo file. Zero network."""
+    out = sys.stdout if out is None else out
+    cfg = Config(allowlist={42}, telegram_token="fake-token",
+                 openrouter_key="fake-key", model="moonshotai/kimi-k2.5",
+                 base_url=DEFAULT_BASE_URL, system_prompt="selftest")
+    tmp = tempfile.mkdtemp(prefix="gaffer-selftest-")
+    learnings_path = os.path.join(tmp, "learnings.md")
+    shutil.copyfile(os.path.join(REPO_ROOT, "agent", "memory", "learnings.md"),
+                    learnings_path)
+    state_path = os.path.join(REPO_ROOT, "season-state.json")
+    assembler = Assembler(
+        os.path.join(REPO_ROOT, "agent"), state_path,
+        projections_path=os.path.join(REPO_ROOT, "fixtures", "projections-sample.csv"),
+        gw=1, learnings_path=learnings_path)
+    learnings = LearningsLog(learnings_path, state_path=state_path)
+    turns = ["how's my team looking?",
+             "backtest doubling up on a GK+DEF from the same club",
+             "should I double up on the Arsenal defence?"]
+    transport = FakeTransport(
+        updates_batches=[[_update(i + 1, t)] for i, t in enumerate(turns)],
+        llm_replies=["Haaland (C) anchors a solid XI — thin bench the one worry.",
+                     _SELFTEST_LEARNINGS_REPLY,
+                     "Only across a soft run — the backtest says fixture bet."])
+    logbuf = io.StringIO()
+    telegram, llm, logger = build_stack(cfg, transport, logbuf)
+
+    # Wire a fake chat tool (spec §4): the canned replies never call it, so the
+    # reply text is byte-identical — but the run_agent tool-loop path is exercised
+    # offline, and offering tools proves it does not disturb the grounded prompt.
+    fake_tool = Tool("noop", "a no-op chat tool for the offline selftest",
+                     {"type": "object", "properties": {}, "required": []},
+                     lambda **kw: "noop")
+
+    before = len(learnings.entries())
+    offset = 0
+    for _ in turns:
+        offset = poll_once(cfg, telegram, llm, logger, offset,
+                           assembler=assembler, learnings=learnings,
+                           tools_factory=lambda: [fake_tool])
+
+    events = [json.loads(l) for l in logbuf.getvalue().splitlines()]
+    kinds = {e["event"] for e in events}
+    system = transport.llm_requests[0]["messages"][0]["content"]
+    grounded = "Haaland" in system                       # a real squad fact reached the model
+    clean = not any(m in system for m in ('"picks"', "bought_for", "bench_order"))
+    bounded = estimate_tokens(system) <= 25000
+
+    recorded = len(learnings.entries()) - before          # turn 2 grew the diary
+    recalled = "SELFTEST-LESSON" in transport.llm_requests[2]["messages"][0]["content"]
+    stripped = "```learnings" not in transport.sent[1]["text"]
+    ok = ({"wake", "reply", "learnings_recorded"} <= kinds and grounded and clean
+          and bounded and recorded == 2 and recalled and stripped)
+
+    for e in events:
+        out.write(json.dumps(e) + "\n")
+    out.write(f"assembled prompt: {estimate_tokens(system)} tokens, "
+              f"grounded={grounded}, no-raw-json={clean}, within-25k={bounded}\n")
+    out.write(f"learnings: recorded={recorded}, recalled={recalled}, "
+              f"block-stripped={stripped}\n")
+
+    # #54: one analyst as a tool loop, offline, into a temp GW folder.
+    helper_ok, helper_lines = _selftest_helper(cfg)
+    for line in helper_lines:
+        out.write(line + "\n")
+    ok = ok and helper_ok
+
+    # #55: a role proposal from chat through the fake git-host runner.
+    propose_ok, propose_lines = _selftest_propose(cfg)
+    for line in propose_lines:
+        out.write(line + "\n")
+    ok = ok and propose_ok
+
+    # #56: one draft wake fanning out — analysts → plan → AM → draft — offline.
+    fanout_ok, fanout_lines = _selftest_fanout(cfg)
+    for line in fanout_lines:
+        out.write(line + "\n")
+    ok = ok and fanout_ok
+
+    # #57: the daily Scout wake twice into one log — newest first, URGENT flagged.
+    scout_ok, scout_lines = _selftest_scout(cfg)
+    for line in scout_lines:
+        out.write(line + "\n")
+    ok = ok and scout_ok
+
+    # spec §4: the on-Pi engineer builds a ticket into a green PR, offline.
+    engineer_ok, engineer_lines = _selftest_engineer(cfg)
+    for line in engineer_lines:
+        out.write(line + "\n")
+    ok = ok and engineer_ok
+
+    out.write(f"selftest: {'PASS' if ok else 'FAIL'} (events: {sorted(kinds)}, "
+              f"helper={'PASS' if helper_ok else 'FAIL'}, "
+              f"propose={'PASS' if propose_ok else 'FAIL'}, "
+              f"fanout={'PASS' if fanout_ok else 'FAIL'}, "
+              f"scout={'PASS' if scout_ok else 'FAIL'}, "
+              f"engineer={'PASS' if engineer_ok else 'FAIL'})\n")
+    return 0 if ok else 1
+
+

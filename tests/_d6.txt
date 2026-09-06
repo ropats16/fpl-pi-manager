@@ -1,0 +1,153 @@
+    env = {"GAFFER_ALLOWLIST_USER_IDS": "1", "TELEGRAM_BOT_TOKEN": "T",
+           "OPENROUTER_API_KEY": "K", "GAFFER_REPORTS_DIR": os.path.join(tmp, "reports"),
+           "GAFFER_DATA_DIR": os.path.join(tmp, "data"),
+           "GAFFER_APPROVAL_STATE_PATH": os.path.join(tmp, "approval-state.json"),
+           "GAFFER_PROJECTIONS_PATH": os.path.join(REPO_ROOT, "fixtures",
+                                                   "projections-sample.csv"),
+           "GAFFER_MODEL": cfg.model}
+    ApprovalStore(env["GAFFER_APPROVAL_STATE_PATH"]).set_pending(
+        gw, {"transfers_in": [], "transfers_out": [], "hits": 0, "starting_xi": [],
+             "captain": "Haaland", "vice": "Saka", "chip": None, "contingencies": []})
+    replies = ["Morning sweep: all owned starters trained (SELFTEST canned FFS, 4 Sep).\n\n"
+               "Coverage: FPL flags, FFS team news.",
+               "**URGENT**: Saka out 3 weeks (SELFTEST canned presser, 4 Sep) — voids the "
+               "(VC).\n\nCoverage: presser, FPL flags."]
+    logbuf = io.StringIO()
+    rcs, tasks = [], []
+    for i, reply in enumerate(replies):
+        transport = FakeTransport(llm_replies=[reply],
+                                  usage={"prompt_tokens": 2000, "completion_tokens": 200})
+        rcs.append(run_scout_cmd([], env=env, transport=transport, out=logbuf,
+                                 fetch_events=lambda: events,
+                                 now=now.replace(hour=4 + 6 * i)))
+        tasks.append(transport.llm_requests[0]["messages"][-1]["content"]
+                     if transport.llm_requests else "")
+    log_path = os.path.join(tmp, "reports", f"gw{gw:02d}", "scout-log.md")
+    log = ""
+    if os.path.exists(log_path):
+        with open(log_path, encoding="utf-8") as f:
+            log = f.read()
+    entries = len(scout_entries(log))
+    newest_first = ("URGENT" in log and "Morning sweep" in log
+                    and log.index("URGENT") < log.index("Morning sweep"))
+    raw = logbuf.getvalue().splitlines()
+    events_logged = [json.loads(l) for l in raw if l.startswith("{")]
+    urgent = [e for e in events_logged if e["event"] == "scout_urgent"]
+    summaries = [l for l in raw if l.startswith("scout: ")]
+    plan_in_task = all("(C) Haaland" in t and "URGENT" in t for t in tasks)
+    cost = sum(float(l.split("cost=$")[1].split()[0]) for l in summaries) if summaries else 0.0
+    ok = (rcs == [0, 0] and entries == 2 and newest_first and len(urgent) == 1
+          and "Saka out 3 weeks" in urgent[0].get("line", "") and plan_in_task
+          and len(summaries) == 2 and "urgent=True" in summaries[1] and cost > 0)
+    lines = [json.dumps(e) for e in events_logged]
+    lines.append(f"scout: gw={gw} entries={entries} newest-first={newest_first} "
+                 f"urgent={len(urgent) == 1} plan-in-task={plan_in_task} "
+                 f"log={log_path} cost=${cost:.5f}")
+    return ok, lines
+
+
+def _selftest_engineer(cfg):
+    """The spec §4 acceptance demo, offline: the engineer clones a small
+    workspace through the fake git host, writes one file, runs a (faked) green
+    suite, and the host records a push + a non-draft PR whose body closes the
+    issue. One write + one green run_tests, no real subprocess. Returns
+    (ok, lines)."""
+    src = tempfile.mkdtemp(prefix="gaffer-selftest-eng-src-")
+    os.makedirs(os.path.join(src, "tests"))
+    with open(os.path.join(src, "tests", "test_placeholder.py"), "w") as f:
+        f.write("import unittest\n\n\nclass T(unittest.TestCase):\n"
+                "    def test_ok(self):\n        self.assertTrue(True)\n")
+    host = FakeGitHost(url_base="https://github.com/selftest/pull/", clone_source=src)
+    title, spec = "Add a marker module", "Create fpl_marker.py exposing VERSION = 1."
+    n, _ = host.open_issue(title, spec, labels=["gaffer", "build"])
+    data_dir = tempfile.mkdtemp(prefix="gaffer-selftest-eng-")
+    transport = FakeTransport(
+        llm_replies=[
+            tool_call_message("write_file",
+                              {"path": "fpl_marker.py", "content": "VERSION = 1\n"}, "w1"),
+            tool_call_message("run_tests", {}, "t1"),
+            "Added fpl_marker.py with VERSION = 1; suite green."],
+        usage={"prompt_tokens": 2000, "completion_tokens": 200})
+    logbuf = io.StringIO()
+    _, llm, logger = build_stack(cfg, transport, logbuf)
+    res = engineer.run_build(
+        engineer.Issue(n, title, spec), host, llm, cfg.helpers.models["engineer"],
+        load_build_caps({}), load_build_fix_turns({}), data_dir,
+        engineer.REPO_RULES, logger,
+        test_runner=lambda w, p: (True, "Ran 1 test in 0.001s\n\nOK"))
+    events = [json.loads(l) for l in logbuf.getvalue().splitlines()]
+    kinds = {e["event"] for e in events}
+    wrote = os.path.exists(os.path.join(data_dir, "work", f"build-{n}", "fpl_marker.py"))
+    pr = host.build_prs[0] if host.build_prs else {}
+    closes = f"Closes #{n}" in pr.get("body", "")
+    ok = (res.status == "green" and bool(res.pr_url) and wrote and bool(host.pushes)
+          and pr.get("draft") is False and closes
+          and {"build_start", "build_tests", "build_pr"} <= kinds)
+    lines = [json.dumps(e) for e in events]
+    lines.append(f"engineer: issue={n} status={res.status} pr={res.pr_url} "
+                 f"file-written={wrote} pushed={bool(host.pushes)} "
+                 f"draft={pr.get('draft')} closes={closes} turns={res.turns} "
+                 f"cost=${res.cost_usd:.5f}")
+    return ok, lines
+
+
+def _selftest_propose(cfg):
+    """The #55 acceptance demo, offline: `propose role: …` in chat -> the block
+    format rides in the user turn -> the canned reply's block is stripped ->
+    the fake runner records branch + exactly two files under agent/roles/ ->
+    the reply carries the PR link. Plus the ACL: a tier-1 path is refused
+    before the runner sees it."""
+    host = FakeGitHost(url_base="https://github.com/selftest/pull/")
+    transport = FakeTransport(
+        updates_batches=[[_update(1, "propose role: chips analyst")]],
+        llm_replies=[_SELFTEST_PROPOSE_REPLY])
+    logbuf = io.StringIO()
+    telegram, llm, logger = build_stack(cfg, transport, logbuf)
+    poll_once(cfg, telegram, llm, logger, 0, proposer=make_proposer(host, logger))
+    hinted = "```propose" in transport.llm_requests[0]["messages"][-1]["content"]
+    pr = host.proposals[0] if host.proposals else {}
+    files = sorted(pr.get("files", {}))
+    sent = transport.sent[0]["text"] if transport.sent else ""
+    stripped = "```propose" not in sent
+    linked = "https://github.com/selftest/pull/1" in sent
+    refused = run_propose(Proposal("evil", "e", "body", path="daemon/evil.py"),
+                          host, logger)
+    acl = refused.status == "refused" and len(host.proposals) == 1
+    ok = (hinted and pr.get("branch") == "gaffer/chips-analyst"
+          and files == ["agent/roles/chips-analyst.evidence.md",
+                        "agent/roles/chips-analyst.md"]
+          and stripped and linked and acl)
+    lines = [json.dumps(json.loads(l)) for l in logbuf.getvalue().splitlines()]
+    lines.append(f"propose: branch={pr.get('branch')} files={len(files)} "
+                 f"pr={pr and 'https://github.com/selftest/pull/1'} hinted={hinted} "
+                 f"block-stripped={stripped} link-in-reply={linked} "
+                 f"tier1-refused={acl}")
+    return ok, lines
+
+
+def main(argv):
+    if len(argv) > 1 and argv[1] == "propose":
+        return run_propose_cmd(argv[2:])
+    if len(argv) > 1 and argv[1] == "build":
+        return run_build_cmd(argv[2:])
+    if len(argv) > 1 and argv[1] == "selftest":
+        return run_selftest()
+    if len(argv) > 1 and argv[1] == "notify":
+        return run_notify(argv[2:])
+    if len(argv) > 1 and argv[1] == "watch":
+        return run_watch_cmd()
+    if len(argv) > 1 and argv[1] == "brief":
+        return run_brief_cmd()
+    if len(argv) > 1 and argv[1] == "review":
+        return run_review_cmd()
+    if len(argv) > 1 and argv[1] == "helper":
+        return run_helper_cmd(argv[2:])
+    if len(argv) > 1 and argv[1] == "scout":
+        return run_scout_cmd(argv[2:])
+    if len(argv) > 1 and argv[1] == "sync":
+        return run_sync_cmd(argv[2:])
+    return run_daemon()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

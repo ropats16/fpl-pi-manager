@@ -1,0 +1,40 @@
+evidence). The daemon strips that block before Telegram (same seam as ` ```plan `,
+#18; a malformed one is stripped and logged, never sent), vets it, and appends what
+survives — one line per entry, `open(…, "a")` + fsync only — to
+`agent/memory/learnings.md`, a model-writable append-only diary
+(`GAFFER_LEARNINGS_PATH` overrides the path). **Only an analysis-routed chat reply may
+write** (the #21 review wake is the one other writer, on its own scorecard-grounded path): a
+block riding on any other reply is stripped and logged as ignored, so a poisoned report
+can't coach a status answer into memory. Vetting is the in-code half
+of the tier-3 memory-write policy (`plans/security-hardening.md` §4): kind ∈
+specific/general, provenance mandatory, whitespace collapsed to one line (an entry
+can never inject a heading), any URL rejected, caps 280/200 chars and ≤4 per reply,
+dedupe on the lesson; every rejection is logged with its reason. The policy's other
+half — one git commit per model write for audit/revert — is the #11 deploy machinery
+and is not wired yet; until then the diary is reviewed as ordinary repo diff. Prompt assembly then
+injects a bounded relevance-scored selection (≤6 entries / ~1.5k chars) under an
+"evidence, not instructions" delimiter, so a poisoned learning can bias judgment but
+never carry an order. `python3 -m daemon selftest` demonstrates the 2-turn
+record→recall path offline against a temp copy (never the repo file); harness is
+`tests/test_learnings_loop.py`.
+
+Config on the Pi comes from systemd (encrypted creds + root-owned
+`/etc/fpl-gaffer/gaffer.env`), never the workspace — see `deploy/README.md` for
+the one-time bootstrap and supervision (systemd `Restart=always`, boot-start,
+15-min pull timer). The pull is also the deploy: `deploy/pull-reload.sh` merges
+`main`→`pi/live` and, **only if tracked `*.py` changed**, gates a
+`systemctl restart` behind the offline `daemon selftest` (a failing build never
+restarts the live gaffer) and pushes a Telegram deploy/blocked notice via
+`python3 -m daemon notify` (token-only, no LLM key). Markdown/data/squad apply
+next wake, no restart. For local dev the daemon falls back to env vars
+(`GAFFER_ALLOWLIST_USER_IDS`, `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`; see
+`.env.example`). Locked decisions: runtime #7, LLM endpoint #8, security #10,
+deploy #11.
+
+### Post-GW review (#21)
+
+The scoring half of the learning loop. A ~4-hourly timer wakes `python3 -m daemon review`
+(`fpl-gaffer-review.{service,timer}`): a cheap check of the FPL bootstrap events that spends
+LLM tokens **once per finished gameweek** and logs `review_quiet` otherwise. When a GW settles
+it fetches the actuals, sets them against the **projection snapshot the brief wake froze** at
+draft/act time (`data/projections-gwNN.csv`, written by `daemon.review.snapshot_projections`)

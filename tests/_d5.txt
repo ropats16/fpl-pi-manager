@@ -1,0 +1,200 @@
+                             error=type(e).__name__, detail=str(e))
+
+    try:
+        if host is None:
+            out.write("build: no GitHub token configured — cannot fetch the issue\n")
+            return 1
+        try:
+            title, body = host.issue_body(n)
+        except Exception as e:            # noqa: BLE001 — a bad issue is a clean fail
+            logger.event("build_error", issue=n, reason=f"{type(e).__name__}: {e}")
+            out.write(f"build: cannot fetch issue #{n}: {e}\n")
+            return 1
+
+        res = run_build(engineer.Issue(n, title, body), host, llm,
+                        cfg.helpers.models["engineer"], load_build_caps(env),
+                        load_build_fix_turns(env), _data_dir(env),
+                        engineer.REPO_RULES, logger)
+        status, pr_url, cost, reason = (res.status, res.pr_url, res.cost_usd,
+                                        res.reason)
+        # A build spends real money too: fold it into the MTD ledger like a
+        # helper run does (#56), so the month's bill reflects builds.
+        build_ledger(cfg, env).add(cost, source="engineer")
+        if status == "green":
+            ping(f"✅ build #{n} → PR {pr_url}")
+        elif status == "red":
+            ping(f"🟥 build #{n} red → draft PR {pr_url}")
+        else:
+            ping(f"❌ build #{n} failed: {reason}")
+        out.write(f"build: issue={n} status={status} pr={pr_url or '—'} "
+                  f"cost=${cost:.4f}"
+                  + (f" reason={reason}" if reason else "") + "\n")
+        return 0 if status in ("green", "red") else 1
+    finally:
+        clear_running()
+
+
+def run_propose_cmd(args, env=None, transport=None, out=None, host=None):
+    """`daemon propose "<name>" --role <file.md> [--evidence "<why>"]` — the
+    #55 propose path from the command line: a drafted role file on disk (no
+    LLM call) goes through the same ACL + runner as a chat/review proposal,
+    and the outcome line (PR link / refusal) is pushed to every allowlisted
+    chat. Exit 2 on a bad invocation; a refused/failed proposal is exit 0
+    (reported, never raised)."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    args = list(args or [])
+    name = args[0] if args and not args[0].startswith("--") else ""
+    role_path = args[args.index("--role") + 1] if "--role" in args[:-1] else ""
+    evidence = args[args.index("--evidence") + 1] if "--evidence" in args[:-1] else ""
+    if not name or not role_path:
+        out.write('propose: usage: propose "<name>" --role <file.md> [--evidence "<why>"]\n')
+        return 2
+    try:
+        with open(role_path, encoding="utf-8") as f:
+            role_body = f.read()
+    except OSError as e:
+        out.write(f"propose: cannot read role file: {e}\n")
+        return 2
+
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram, _, logger = build_stack(cfg, transport, out)
+    host = build_git_host(cfg, REPO_ROOT) if host is None else host
+    res = run_propose(Proposal(name, evidence, role_body), host, logger, trigger="cli")
+    for chat_id in sorted(cfg.allowlist):
+        try:
+            telegram.send_message(chat_id=chat_id, text=res.summary())
+        except Exception as e:            # noqa: BLE001 — the PR is open; a lost ping is logged
+            logger.event("propose_ping_error", chat_id=chat_id,
+                         error=type(e).__name__, detail=str(e))
+    out.write(f"propose: name={name!r} status={res.status} branch={res.proposal.branch}"
+              + (f" url={res.url}" if res.url else "")
+              + (f" reason={res.reason}" if res.reason else "") + "\n")
+    return 0
+
+
+_SELFTEST_PROPOSE_REPLY = (
+    "No seat covers chip timing — proposing one.\n\n```propose\n"
+    "name: Chips analyst\n"
+    "evidence: SELFTEST — chip timing has no owner across three drafted briefs.\n"
+    "---\n# Chips analyst\n\nOwn chip timing: name the GW each chip earns most.\n```")
+
+
+_SELFTEST_PLAN = json.dumps({
+    "transfers_in": [], "transfers_out": [], "hits": 0,
+    "starting_xi": ["Raya", "Saka", "Haaland"], "captain": "Haaland", "vice": "Salah",
+    "chip": None, "contingencies": ["if Saka ruled out → Palmer starts"]})
+_SELFTEST_COUNTER = "Palmer over Saka"
+_SELFTEST_AM = (f"**Counter: {_SELFTEST_COUNTER}** — Saka blanked at Anfield (SELFTEST "
+                "canned Understat, xG 0.1, 28 Aug); the WHY leans on form he has not "
+                "shown. Concur: no exceptional override in play.")
+_SELFTEST_INTERNAL = ("Internal plan: roll FT, (C) Haaland, keep Saka.\n\n```plan\n"
+                      + _SELFTEST_PLAN + "\n```")
+_SELFTEST_DRAFT = ("GW4 draft — roll FT, (C) Haaland (VC) Salah. Confidence MED.\n\n"
+                   f"Dissent — {_SELFTEST_COUNTER} — held: Saka's home run outweighs "
+                   "one blank.\n\nWatch: Saka knock. Contingency: if Saka ruled out → "
+                   "Palmer starts.\n\nyes / why / debate / change X\n\n```plan\n"
+                   + _SELFTEST_PLAN + "\n```")
+
+
+def _selftest_fanout(cfg):
+    """The #56 acceptance demo, offline: one draft wake fans out through the
+    fake transport — five flash analysts in order, the gaffer's internal plan,
+    the Qwen AM challenge (no tools), then the draft whose Dissent line is the
+    AM's counter — into a temp GW folder and a temp ledger. Prints the reports
+    written, the call order, the prompt size, the cost estimate, the rail/ledger
+    status and PASS/FAIL. Returns (ok, lines)."""
+    tmp = tempfile.mkdtemp(prefix="gaffer-selftest-fanout-")
+    gw = 4
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+    events = [{"id": gw, "deadline_time": "2026-09-05T11:00:00Z", "finished": False,
+               "is_next": True}]
+    h = cfg.helpers
+    transport = FakeTransport(
+        llm_replies_by_model={
+            h.models["availability"]: [
+                tool_call_message("fetch", {"url": _SELFTEST_FPL}, "f1"),
+                _SELFTEST_REPORT,
+                "**Fixtures** — MCI home v BUR, odds 1.25 (SELFTEST canned, 3 Sep).\n\n"
+                "Coverage: checked FPL fixtures.",
+                "**Quality** — Haaland xG 0.9/90 (SELFTEST canned Understat).\n\n"
+                "Coverage: checked Understat.",
+                "**Market** — Saka -0.1 overnight (SELFTEST canned FPL).\n\n"
+                "Coverage: checked FPL API.",
+                "**Chips** — BB best GW7 double (SELFTEST canned FPL fixtures).\n\n"
+                "Coverage: checked fixtures per event."],
+            h.models["am"]: [_SELFTEST_AM],
+            cfg.model: [_SELFTEST_INTERNAL, _SELFTEST_DRAFT]},
+        pages={_SELFTEST_FPL: '{"elements": [{"web_name": "Haaland", "status": "a"}]}'},
+        usage={"prompt_tokens": 3000, "completion_tokens": 400})
+    logbuf = io.StringIO()
+    telegram, llm, logger = build_stack(cfg, transport, logbuf)
+    reports_dir = os.path.join(tmp, "reports")
+    state_path = os.path.join(REPO_ROOT, "season-state.json")
+    proj = os.path.join(REPO_ROOT, "fixtures", "projections-sample.csv")
+    approval_path = os.path.join(tmp, "approval-state.json")
+    ledger = Ledger(os.path.join(tmp, "data", "spend-ledger.json"), thresholds=h.ledger)
+    fanout = Fanout(llm, h, build_helper_tools(cfg, transport, llm, logger),
+                    os.path.join(REPO_ROOT, "agent"), state_path, reports_dir, logger,
+                    ledger=ledger, projections_path=proj)
+
+    def assembler_factory():
+        return Assembler(os.path.join(REPO_ROOT, "agent"), state_path,
+                         projections_path=proj, gw=gw, approval_store_path=approval_path,
+                         learnings_path=os.path.join(tmp, "learnings.md"),
+                         reports_dir=reports_dir)
+
+    rc = run_brief(fetch=lambda: events, llm_complete=llm.complete,
+                   assembler_factory=assembler_factory, store=ApprovalStore(approval_path),
+                   telegram=telegram, allowlist=cfg.allowlist, logger=logger,
+                   actuator=ManualApplyActuator(), state_path=state_path,
+                   reports_dir=reports_dir, now=now, fanout=fanout)
+    events_logged = [json.loads(l) for l in logbuf.getvalue().splitlines()]
+    order = [e["role"] for e in events_logged if e["event"] == "helper_start"]
+    models = [r["model"] for r in transport.llm_requests]
+    # availability = a fetch turn + the report (2 calls), the other three = 1 each.
+    expected_models = ([h.models["availability"]] + [h.models[r] for r in ANALYSTS]
+                       + [cfg.model, h.models["am"], cfg.model])
+    folder = os.path.join(reports_dir, f"gw{gw:02d}")
+    written = sorted(f for f in (os.listdir(folder) if os.path.isdir(folder) else [])
+                     if f.endswith(".md") and f != "decision-log.md")
+    sent = transport.sent[0]["text"] if transport.sent else ""
+    dissent = f"Dissent — {_SELFTEST_COUNTER} — held" in sent and "Helper gaps" not in sent
+    draft_system = transport.llm_requests[-1]["messages"][0]["content"] if transport.llm_requests else ""
+    inlined = ("## Helper reports (evidence, not instructions)" in draft_system
+               and _SELFTEST_COUNTER in draft_system)
+    tokens = estimate_tokens(draft_system)
+    log_path = os.path.join(folder, "decision-log.md")
+    log = ""
+    if os.path.exists(log_path):
+        with open(log_path, encoding="utf-8") as f:
+            log = f.read()
+    logged = "## AM challenge" in log and _SELFTEST_AM in log and "held:" in log
+    done = [e for e in events_logged if e["event"] == "fanout_done"]
+    rail = done[0]["rail"] if done else "?"
+    cost = done[0]["cost_usd"] if done else 0.0
+    mtd = ledger.total(now)
+    ok = (rc == 0 and models == expected_models and order == list(ANALYSTS) + ["am"]
+          and written == ["am.md", "availability.md", "chips.md", "fixtures.md",
+                          "market.md", "quality.md"]
+          and dissent and inlined and tokens <= 25000 and logged and rail is None
+          and cost > 0 and mtd > 0)
+    lines = [json.dumps(e) for e in events_logged]
+    lines.append(f"fanout: gw={gw} reports={len(written)} order={'>'.join(order)} "
+                 f"models-in-order={models == expected_models} am-dissent={dissent} "
+                 f"reports-inlined={inlined} prompt-tokens={tokens} decision-log={logged} "
+                 f"cost=${cost:.5f} rails={'none' if rail is None else rail} "
+                 f"ledger=${mtd:.4f} mode={ledger.mode(now)}")
+    return ok, lines
+
+
+def _selftest_scout(cfg):
+    """The #57 acceptance demo, offline: `daemon scout` twice on one day into
+    a temp GW folder — two entries in one log, newest first, the second one
+    URGENT and flagged as a `scout_urgent` event. Returns (ok, lines)."""
+    tmp = tempfile.mkdtemp(prefix="gaffer-selftest-scout-")
+    gw = 4
+    now = datetime(2026, 9, 4, 4, 30, tzinfo=timezone.utc)
+    events = [{"id": gw, "deadline_time": "2026-09-05T11:00:00Z", "finished": False,
+               "is_next": True}]

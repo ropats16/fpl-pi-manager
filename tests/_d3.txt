@@ -1,0 +1,200 @@
+def run_notify(args, env=None, transport=None, out=None):
+    """`daemon notify "<text>"` — push a one-off message to every allowlisted
+    chat. Used by the deploy path to report a reload or a blocked deploy. Reuses
+    the daemon's Telegram client (same token/allowlist config) rather than
+    re-implementing sendMessage. A send failure is logged, never raised: a deploy
+    notice must not fail the deploy."""
+    out = sys.stderr if out is None else out
+    text = args[0] if args else ""
+    if not text.strip():
+        out.write("notify: empty message, nothing sent\n")
+        return 2
+    allowlist, token = load_notify_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram = Telegram(token, transport)
+    sent = 0
+    for chat_id in sorted(allowlist):
+        try:
+            telegram.send_message(chat_id=chat_id, text=text)
+            sent += 1
+        except Exception as e:            # noqa: BLE001 — never fail a deploy on a notice
+            # This path bypasses the daemon's scrubbing logger; a transport error
+            # could stringify the token-bearing URL, so scrub the token by hand.
+            detail = str(e).replace(token, "***") if token else str(e)
+            out.write(f"notify: send to {chat_id} failed: {detail}\n")
+    return 0 if sent else 1
+
+
+def run_watch_cmd(env=None, transport=None, out=None, fetch=None):
+    """`daemon watch` — the timer-driven price/status wake (#17). Deterministic:
+    it fetches, diffs, and alerts without ever loading the LLM key (notify-grade
+    config only, same least-privilege posture as the deploy notice). Paths are
+    env-overridable so the Pi clone can relocate them; the baseline lives under
+    the gitignored data/ dir because it is machine state, not repo content."""
+    out = sys.stderr if out is None else out
+    allowlist, token = load_notify_config(env)
+    env = os.environ if env is None else env
+    logger = StructuredLogger(stream=out, secrets=[token])
+    telegram = Telegram(token, UrllibTransport() if transport is None else transport)
+    if fetch is None:
+        def fetch():
+            return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))
+    return run_watch(
+        fetch=fetch,
+        state_path=_state_path(env),
+        shortlist_path=env.get("GAFFER_SHORTLIST_PATH",
+                               os.path.join(REPO_ROOT, "agent", "memory",
+                                            "shortlist.md")),
+        baseline_path=env.get("GAFFER_WATCH_BASELINE_PATH",
+                              os.path.join(REPO_ROOT, "data", "watch-baseline.json")),
+        telegram=telegram, allowlist=allowlist, logger=logger)
+
+
+def _bootstrap_cache():
+    """One distilled bootstrap per wake, fetched on first use, shared by the
+    events check and the season sync."""
+    boot = {}
+
+    def _bootstrap():
+        if "snap" not in boot:
+            boot["snap"] = fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))
+        return boot["snap"]
+    return _bootstrap
+
+
+def build_sync(env, logger, fetch_bootstrap):
+    """The season-state auto-sync over the public entry endpoints; entry id
+    from FPL_ENTRY_ID / the state (None → the sync reports 'skipped')."""
+    state_path = _state_path(env)
+    entry = _resolve_entry_id(env, state_path)
+    return SeasonSync(
+        state_path, entry,
+        fetch_picks=lambda gw: fpl_api.get(f"/entry/{entry}/event/{gw}/picks/"),
+        fetch_history=lambda: fpl_api.get(f"/entry/{entry}/history/"),
+        fetch_bootstrap=fetch_bootstrap, logger=logger)
+
+
+def run_sync_cmd(args, env=None, transport=None, out=None, fetch_events=None,
+                 now=None, sync=None):
+    """`daemon sync [--gw N]` — roll season-state.json to the next unfinished
+    gameweek by hand (the same path the review and draft wakes run on their
+    own). Exit 0 unless the sync errored (1) or the invocation is bad (2)."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    gw, rc = _gw_flag(list(args or []), "sync", out)
+    if rc:
+        return rc
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    _, _, logger = build_stack(cfg, transport, out)
+    now = now or datetime.now(timezone.utc)
+    bootstrap = _bootstrap_cache()
+    if fetch_events is None:
+        def fetch_events():
+            return bootstrap()["events"]
+    gw = _resolve_gw(gw, fetch_events, now, _state_path(env), logger)
+    if gw is None:
+        out.write("sync: could not determine the gameweek (pass --gw N)\n")
+        return 2
+    sync = build_sync(env, logger, bootstrap).ensure if sync is None else sync
+    res = sync(gw)
+    out.write(f"sync: gw={gw} status={res.get('status')} from={res.get('from_gw')} "
+              f"free_transfers={res.get('free_transfers')} squad={res.get('squad')}"
+              + (f" reason={res.get('reason')}" if res.get("reason") else "") + "\n")
+    return 1 if res.get("status") == "error" else 0
+
+
+def run_brief_cmd(env=None, transport=None, out=None, fetch=None, now=None, sync=None):
+    """`daemon brief` — the timer-driven deadline-brief wake (#18). Unlike the
+    watch, the brief thinks: it loads the full config (the LLM key), assembles a
+    grounded prompt, and on a draft tick fans out (#56: four analysts, the
+    internal plan, the AM, then the draft) or on a final tick runs one Scout
+    delta before the final. Outside a window it is a cheap clock check that
+    sends nothing. The approval state lives in data/approval-state.json
+    (gitignored, shared with the reply loop); spend lands in the MTD ledger."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram, llm, logger = build_stack(cfg, transport, out)
+
+    approval_path = _approval_state_path(env)
+    reports_dir = _reports_dir(env)
+    state_path = _state_path(env)
+    store = ApprovalStore(approval_path)
+    actuator = ManualApplyActuator()
+
+    def assembler_factory():
+        return build_assembler(env, approval_store_path=approval_path)
+
+    bootstrap = _bootstrap_cache()
+    if fetch is None:
+        def fetch():
+            return bootstrap()["events"]
+    if sync is None:
+        sync = build_sync(env, logger, bootstrap).ensure
+
+    return run_brief(fetch=fetch, llm_complete=llm.complete,
+                     assembler_factory=assembler_factory, store=store,
+                     telegram=telegram, allowlist=cfg.allowlist, logger=logger,
+                     actuator=actuator, state_path=state_path,
+                     reports_dir=reports_dir,
+                     projections_path=_projections_path(env),
+                     snapshot_dir=_data_dir(env), now=now,
+                     fanout=build_fanout(cfg, env, transport, llm, logger),
+                     sync=sync)
+
+
+def _resolve_entry_id(env, state_path):
+    """The FPL entry (team) id the review pulls the fielded picks with (#21) —
+    public, non-secret. `FPL_ENTRY_ID` env override first, then the season-state
+    `entry_id`, else None (the review falls back to the season-state squad).
+    Tolerant int parse: any junk — a missing/corrupt state included — resolves to
+    None, never raises."""
+    raw = env.get("FPL_ENTRY_ID")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raw = None
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                raw = json.load(f).get("entry_id")
+        except Exception:                 # noqa: BLE001 — missing/corrupt state -> no id
+            raw = None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def run_review_cmd(env=None, transport=None, out=None, fetch_events=None,
+                   fetch_actuals=None, now=None, sync=None):
+    """`daemon review` — the timer-driven post-GW review wake (#21). Like the
+    brief it thinks (full config incl. the LLM key), but it is even cheaper day
+    to day: a bare events check that spends tokens ONCE per finished gameweek and
+    is otherwise silent. It grades the settled GW from code-computed numbers (the
+    model never scores itself), records a ```learnings block, and appends the
+    review to the decision log. Review state lives in data/review-state.json
+    (gitignored); the projection snapshots it grades against were written by the
+    brief wake into the same data/ dir."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram, llm, logger = build_stack(cfg, transport, out)
+
+    state_path = _state_path(env)
+    reports_dir = _reports_dir(env)
+    review_state = env.get("GAFFER_REVIEW_STATE_PATH",
+                           os.path.join(_data_dir(env), "review-state.json"))
+    store = ReviewStore(review_state)
+    learnings = LearningsLog(_learnings_path(env), state_path=state_path)
+    entry_id = _resolve_entry_id(env, state_path)
+
+    approval_path = _approval_state_path(env)
+
+    def assembler_factory():
+        return build_assembler(env, approval_store_path=approval_path)
+
+    # One bootstrap snapshot per wake, shared by both default fetchers (the events
+    # check and — only if a GW settled — the actuals pull) so a quiet wake is a
+    # single request and a live one reuses the same snapshot.
+    _bootstrap = _bootstrap_cache()

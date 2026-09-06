@@ -1,0 +1,200 @@
+
+    if fetch_events is None:
+        def fetch_events():
+            return _bootstrap()["events"]
+    if fetch_actuals is None:
+        def fetch_actuals(gw):
+            return fpl_api.fetch_actuals(gw, entry_id, bootstrap_snap=_bootstrap())
+    if sync is None:
+        sync = build_sync(env, logger, _bootstrap).ensure
+
+    return run_review(fetch_events=fetch_events, fetch_actuals=fetch_actuals,
+                      llm_complete=llm.complete,
+                      assembler_factory=assembler_factory, store=store,
+                      telegram=telegram, allowlist=cfg.allowlist, logger=logger,
+                      learnings=learnings, state_path=state_path,
+                      reports_dir=reports_dir, snapshot_dir=_data_dir(env),
+                      now=now,
+                      propose=make_proposer(build_git_host(cfg, REPO_ROOT), logger),
+                      sync=sync)
+
+
+def _current_gw(state_path):
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            return int(json.load(f).get("current_gw"))
+    except Exception:                     # noqa: BLE001 — missing/corrupt state -> None
+        return None
+
+
+def _gw_flag(args, cmd, out):
+    """`--gw N` off a subcommand's argv: (gw or None, error rc or None)."""
+    if "--gw" not in args:
+        return None, None
+    try:
+        return int(args[args.index("--gw") + 1]), None
+    except (IndexError, ValueError):
+        out.write(f"{cmd}: --gw needs an integer\n")
+        return None, 2
+
+
+def _resolve_gw(gw, fetch_events, now, state_path, logger):
+    """The helper/Scout gameweek: an explicit `--gw`, else the next unfinished
+    FPL deadline (like the brief), else the season-state current_gw when the
+    events fetch fails. None when nothing resolves."""
+    if gw is not None:
+        return gw
+    if fetch_events is None:
+        def fetch_events():
+            return fpl_api.distill_bootstrap(fpl_api.get("/bootstrap-static/"))["events"]
+    try:
+        nd = next_deadline(fetch_events(), now)
+        gw = nd[0] if nd else None
+    except Exception as e:                # noqa: BLE001 — fall back to season state
+        logger.event("helper_events_error", error=type(e).__name__, detail=str(e))
+    return gw if gw is not None else _current_gw(state_path)
+
+
+def _current_plan(env, gw):
+    """The pending/approved plan for `gw` from the approval store, or None —
+    the thing the Scout judges plan-voiding news against (#57)."""
+    store = ApprovalStore(_approval_state_path(env)).load()
+    if store.gw != gw:
+        return None
+    return store.approved_plan or store.pending_plan
+
+
+def run_scout_cmd(args, env=None, transport=None, out=None, fetch_events=None,
+                  now=None):
+    """`daemon scout [--gw N]` — the daily Scout wake (#57): one Scout tool
+    loop for the next unfinished gameweek against the current plan, appended
+    (newest first) to that GW's scout-log.md; an URGENT finding is logged as
+    `scout_urgent` for the brief to surface. Same rails, ledger gating and
+    stub-on-failure as a fan-out step; exit 0 unless the invocation is bad."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    args = list(args or [])
+    gw, rc = _gw_flag(args, "scout", out)
+    if rc:
+        return rc
+
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    _, llm, logger = build_stack(cfg, transport, out)
+    clock = _clock_from(now)
+    now = now or datetime.now(timezone.utc)
+    gw = _resolve_gw(gw, fetch_events, now, _state_path(env), logger)
+    if gw is None:
+        out.write("scout: could not determine the gameweek (pass --gw N)\n")
+        return 2
+
+    fanout = build_fanout(cfg, env, transport, llm, logger, clock=clock)
+    # The step settles its own spend into the ledger (no gaffer call follows).
+    res = fanout.run_daily_scout(gw, _current_plan(env, gw), now=now)
+    r = res.results[0]
+    entries = len(scout_entries(read_scout_log(_reports_dir(env), gw)))
+    out.write(f"scout: gw={gw} status={r.status} log={r.path} entries={entries} "
+              f"urgent={bool(res.urgent)} fetches={r.fetches} searches={r.searches} "
+              f"turns={r.turns} cost=${res.cost_usd:.5f}"
+              + (f" cap={r.cap}" if r.cap else "")
+              + (f" reason={r.reason}" if r.reason else "") + "\n")
+    return 0
+
+
+def run_helper_cmd(args, env=None, transport=None, out=None, fetch_events=None,
+                   now=None):
+    """`daemon helper <role> [--gw N]` — run one helper role by name as a
+    bounded tool loop (#54) and write its report into the next gameweek's
+    report folder. Thinks (full config incl. the LLM key; the Odds API key if
+    provisioned). The GW is the next unfinished FPL deadline (like the brief),
+    overridable with --gw; falls back to the season-state current_gw if the
+    events fetch fails. A helper failure is a stub report and exit 0 — only a
+    bad invocation (unknown role) is non-zero."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    args = list(args or [])
+    role = args[0] if args and not args[0].startswith("--") else ""
+    if role not in ROLE_FILES:
+        out.write(f"helper: unknown role {role!r}; known roles: "
+                  f"{', '.join(ROLE_FILES)}\n")
+        return 2
+    gw, rc = _gw_flag(args, "helper", out)
+    if rc:
+        return rc
+
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    _, llm, logger = build_stack(cfg, transport, out)
+    state_path = _state_path(env)
+    now = now or datetime.now(timezone.utc)
+
+    gw = _resolve_gw(gw, fetch_events, now, state_path, logger)
+    if gw is None:
+        out.write("helper: could not determine the gameweek (pass --gw N)\n")
+        return 2
+
+    h = cfg.helpers
+    writer = ReportWriter(_reports_dir(env), gw, logger=logger,
+                          cap_tokens=REPORT_CAP_TOKENS.get(role, 1000))
+    if writer.exists(role):
+        # Write-once: do not spend a run whose report could not be written.
+        logger.event("report_refused", gw=gw, reason="exists", path=writer.path_for(role))
+        out.write(f"helper: {writer.path_for(role)} already written (write-once); "
+                  "nothing run\n")
+        return 0
+    fetcher, searcher = build_helper_tools(cfg, transport, llm, logger)
+    ledger = build_ledger(cfg, env)
+    res = run_helper(role, llm, h.models[role], _workspace_dir(env),
+                     state_path, gw, fetcher, searcher, writer, h.caps, logger,
+                     projections_path=_projections_path(env),
+                     search=ledger.mode(now) == "full", fetch=(role != "am"))
+    # A manual run spends real money too: the MTD ledger sees it (#56).
+    ledger.add(res.cost_usd, now, source=f"helper-{role}")
+    out.write(f"helper: role={role} gw={gw} status={res.status} report={res.path} "
+              f"fetches={res.fetches} requests={res.requests} searches={res.searches} "
+              f"turns={res.turns} cost=${res.cost_usd:.5f}"
+              + (f" cap={res.cap}" if res.cap else "")
+              + (f" reason={res.reason}" if res.reason else "") + "\n")
+    return 0
+
+
+def run_build_cmd(args, env=None, transport=None, out=None, host=None,
+                  run_build=None):
+    """`daemon build <N>` — the spawned engineer job (spec §3/§4). Loads config,
+    fetches issue #N's title/body via the git host, and hands it to
+    `daemon.engineer.run_build`, then sends the Telegram receipt and prints the
+    summary line. Exit 0 for green/red, 1 for error, 2 for a bad invocation.
+    `run_build` is injectable so the receipts/exit codes are tested without a
+    real build (the suite never forks a real subprocess)."""
+    out = sys.stderr if out is None else out
+    env = os.environ if env is None else env
+    args = list(args or [])
+    try:
+        n = int(args[0]) if args and not args[0].startswith("--") else None
+    except ValueError:
+        n = None
+    if n is None:
+        out.write("build: usage: build <issue-number>\n")
+        return 2
+
+    cfg = load_config(env)
+    transport = UrllibTransport() if transport is None else transport
+    telegram, llm, logger = build_stack(cfg, transport, out)
+    host = build_git_host(cfg, REPO_ROOT) if host is None else host
+    run_build = engineer.run_build if run_build is None else run_build
+    # This is the running build (the gate set `running_build` before spawning
+    # us). Clear it on the way out — success or failure — so the gate is never
+    # stuck refusing the next build with a stale `running_build`.
+    store = ApprovalStore(_approval_state_path(env))
+
+    def clear_running():
+        store.load()
+        if store.running_build and store.running_build.get("issue") == n:
+            store.clear_running_build()
+
+    def ping(text):
+        for chat_id in sorted(cfg.allowlist):
+            try:
+                telegram.send_message(chat_id=chat_id, text=text)
+            except Exception as e:        # noqa: BLE001 — a lost ping is logged only
+                logger.event("build_ping_error", chat_id=chat_id,

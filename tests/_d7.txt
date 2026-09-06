@@ -1,0 +1,40 @@
+`run_pipeline.sh` prefers `./.venv/bin/python`, else falls back to `python3` (the Pi, where
+pulp is a system package: `sudo apt install -y python3-pulp coinor-cbc`).
+
+## Gaffer daemon (walking skeleton — #15)
+
+The resident agent: long-polls Telegram, answers only the numeric-ID allowlist
+(unknown sender = silent drop + log), makes one OpenRouter LLM round-trip
+(Kimi K2.5), replies. The model's markdown reply is rendered to Telegram HTML
+(`daemon/format.py`) so **bold**/bullets/`code` display properly, with a
+plain-text fallback if a send is rejected. Stdlib-only (Pi-friendly, no pip). Every external is
+faked at the HTTP edge (`daemon/http.py` transport seam), so the whole
+wake→reply loop runs offline.
+
+```sh
+python3 -m daemon selftest                    # offline full message→reply loop, no network/secrets
+python3 -m unittest discover -s tests -v       # HTTP-edge harness (all seams faked)
+python3 -m daemon                              # run the daemon (needs config — see below)
+```
+
+### Workspace + prompt assembly (#16)
+
+The gaffer's persona and know-how live as markdown under `agent/` — `GAFFER.md`
+(persona + standing orders), `roles/*.md` (Scout, five analysts, AM), `playbooks/*.md`
+(per-task how-tos), `memory/MEMORY.md` (capped learnings index) — read fresh each
+wake so a pull applies next message. `daemon/prompt.py` assembles the system prompt
+lean index-then-fetch: persona + memory index + report index + today's playbook +
+a **distilled season snapshot** (squad/bank/FT/chips from `season-state.json`
+joined to `data/projections.csv` by normalized name — projected pts per player and
+for the XI). Raw snapshot JSON and raw API payloads **never** enter a prompt (#9/#10),
+and the assembled prompt is held under a hard ~25k-token cap, critical facts at the
+edges — both asserted at the HTTP-edge harness (`tests/test_assembly_loop.py`).
+`python3 -m daemon selftest` demonstrates the whole path offline: "how's my team
+looking?" → grounded, bounded prompt → reply.
+
+### Learnings loop (#20)
+
+An ad-hoc strategy question (backtest, compare, "is it worth", "what if") routes to
+`agent/playbooks/analysis.md`, which tells the gaffer to answer from the snapshot +
+projections + gw reports and to **end the reply with a fenced ` ```learnings ` JSON
+block** (`{"specific": [...], "general": [...]}`, each entry a lesson + its
