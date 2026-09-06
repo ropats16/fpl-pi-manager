@@ -127,8 +127,8 @@ def refresh_projections(repo_root, data_dir, logger, runner=None,
             boot = _newest(glob.glob(os.path.join(data_dir, "bootstrap-*.json")))
             fix = _newest(glob.glob(os.path.join(data_dir, "fixtures-*.json")))
             if boot is None or fix is None:
-                res = settled(("snapshots", "fetch produced no bootstrap/fixtures "
-                                           "snapshot json"))
+                res = settled(("snapshots", "snapshots: fetch produced no "
+                                            "bootstrap/fixtures snapshot json"))
         if res is None:
             res = settled(_run_step(runner, repo_root,
                                     ["python3", "fpl_api.py", "csv", boot,
@@ -146,9 +146,9 @@ def refresh_projections(repo_root, data_dir, logger, runner=None,
 
         rows = _rows(proj)
         logger.event("projections_refreshed", rows=rows, age_hours=age)
+        was = "missing" if age is None else f"stale {age:.1f}h >= {max_age_hours:g}h"
         return {"status": "refreshed", "age_hours": age, "rows": rows,
-                "reason": f"stale {age:.1f}h >= {max_age_hours:g}h; "
-                          "re-ran fetch, csv, projections"}
+                "reason": f"{was}; re-ran fetch, csv, projections"}
     except Exception as e:               # noqa: BLE001 — a refresh must never kill a wake
         reason = f"refresh: {type(e).__name__}: {e}"
         try:

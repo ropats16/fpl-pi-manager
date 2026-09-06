@@ -219,6 +219,23 @@ wake offline (five flash analysts, Sol plan, Qwen AM, Sol draft) and prints repo
 written, call order, prompt tokens, cost, rail/ledger status and PASS/FAIL; harness is
 `tests/test_fanout.py` + `tests/test_ledger.py`.
 
+### Projection refresh before wakes (#78)
+
+`daemon/pipeline.py` `refresh_projections(repo_root, data_dir, logger, runner=None,
+max_age_hours=12, clock=None)` keeps `data/projections.csv` young: younger than
+12 h → `fresh` (no subprocess); else it re-runs `run_pipeline.sh fetch`'s steps in
+`repo_root` — `python3 fpl_api.py fetch --out data`, `fpl_api.py csv <newest
+bootstrap json>`, `fpl_api.py csv <newest fixtures json>`, `fpl_projections.py`
+(never the optimizer), 10-min timeout each — → `refreshed` (event
+`projections_refreshed` rows/age_hours) or `error` (step + reason, event
+`projections_refresh_error`, old CSV untouched). Never raises. `run_brief_cmd` and
+`run_review_cmd` call it right after `build_stack`, before any LLM call (`refresh=`
+seam); `daemon refresh` runs it by hand and prints `refresh: status=… age=…h rows=…`
+(exit 1 on error). Why: the Pi's projections.csv sat at its 2026-08-22 pre-season
+build until GW3 — every wake reasoned on stale numbers. First engineer-built module
+(issue #78, PR #85: engineer wrote module + tests, ran out of fix budget on the wiring;
+finished by hand). Harness `tests/test_pipeline.py` (fake runner, no subprocess).
+
 ### Daily Scout timer (#57)
 
 `python3 -m daemon scout [--gw N]` wakes the Scout on its own once a day (10:00 IST /

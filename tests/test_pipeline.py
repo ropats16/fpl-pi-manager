@@ -119,8 +119,11 @@ class FreshCsvTest(_Harness):
         self.assertEqual(res["rows"], 3)
 
     def test_at_the_boundary_is_stale(self):
-        # Exactly max_age_hours old is NOT "younger than" it -> refresh.
+        # Exactly max_age_hours old is NOT "younger than" it -> refresh. The
+        # csv steps need the snapshot jsons the (fake) fetch "produced".
         self.write_csv(rows=3, mtime=NOW - 12 * 3600)
+        self.write_snap("bootstrap", "bootstrap-20260822-0900.json", NOW - 60)
+        self.write_snap("fixtures", "fixtures-20260822-0900.json", NOW - 60)
         runner = FakeRunner()
         res = self.refresh(runner=runner, max_age_hours=12)
         self.assertEqual(res["status"], "refreshed")
