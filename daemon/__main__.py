@@ -193,12 +193,14 @@ def run_daemon(env=None, out=None):
     recover_builds(approvals.store, telegram, cfg.allowlist, logger)
     builds = BuildGate(approvals.store, host, _data_dir(env))
     # The gaffer's chat tools (spec §2), the same host wired for open_ticket /
-    # ticket_status / pr_status; the MTD ledger gates its search like the fan-out.
+    # ticket_status / pr_status; one MTD ledger both gates chat search (like the
+    # fan-out) and records each chat wake's spend under `gaffer-chat`.
+    ledger = build_ledger(cfg, env)
     tools_factory = build_chat_tools_factory(cfg, env, transport, llm, logger,
-                                             host=host, ledger=build_ledger(cfg, env))
+                                             host=host, ledger=ledger)
     run(cfg, telegram, llm, logger, assembler=assembler, approvals=approvals,
         learnings=learnings, proposer=proposer, builds=builds,
-        tools_factory=tools_factory)
+        tools_factory=tools_factory, ledger=ledger)
     return 0
 
 

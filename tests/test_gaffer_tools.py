@@ -172,6 +172,14 @@ class ReadReportTest(GafferToolsHarness):
         self.assertIn("no", out.lower())
         self.assertIn("quality", out)
 
+    def test_path_traversal_role_is_refused_and_reads_nothing(self):
+        # A model-chosen role that escapes the GW folder must never read a file.
+        ReportWriter(self.reports, self.gw).write("fixtures", "SECRET-BODY", {})
+        tools, _ = self._build()
+        out = tools["read_report"].fn(role="../../fixtures")
+        self.assertIn("unknown role", out)
+        self.assertNotIn("SECRET-BODY", out)
+
 
 class ReadProjectionsTest(GafferToolsHarness):
     def test_returns_rows_across_gameweeks_for_a_named_player(self):

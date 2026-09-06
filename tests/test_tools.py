@@ -22,6 +22,29 @@ def _fetcher(transport, **kw):
     return Fetcher(transport, ALLOW, **kw), logbuf
 
 
+class FetchJsonTest(unittest.TestCase):
+    def test_returns_parsed_untruncated_json_and_caches_it(self):
+        t = FakeTransport(pages={FPL: '{"events": [{"id": 1}], "teams": []}'})
+        f, _ = _fetcher(t)
+        data = f.fetch_json(FPL)
+        self.assertEqual(data["events"], [{"id": 1}])
+        f.fetch_json(FPL)                              # served from the JSON cache
+        self.assertEqual([u for m, u in t.requests if m == "GET"], [FPL])
+
+    def test_off_allowlist_raises_without_a_request(self):
+        t = FakeTransport()
+        f, _ = _fetcher(t)
+        with self.assertRaises(ValueError):
+            f.fetch_json("https://evil.example/x")
+        self.assertEqual([u for m, u in t.requests if m == "GET"], [])
+
+    def test_non_json_body_raises(self):
+        t = FakeTransport(pages={FPL: "<html>not json</html>"})
+        f, _ = _fetcher(t)
+        with self.assertRaises(ValueError):
+            f.fetch_json(FPL)
+
+
 class FetchAllowlistTest(unittest.TestCase):
     def test_allowlisted_get_returns_body_text(self):
         t = FakeTransport(pages={FPL: '{"events": []}'})

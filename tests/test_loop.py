@@ -80,6 +80,28 @@ class ChatToolsTest(unittest.TestCase):
         self.assertEqual(fake.sent, [{"chat_id": 42, "text": "final gaffer answer"}])
         self.assertEqual(len(fake.llm_requests), 2)        # tool turn + answer
 
+    def test_chat_wake_spend_is_recorded_under_gaffer_chat(self):
+        class RecLedger:
+            def __init__(self):
+                self.adds = []
+
+            def add(self, usd, now=None, source="wake"):
+                self.adds.append((usd, source))
+        tool = Tool("noop", "d", {"type": "object", "properties": {}, "required": []},
+                    lambda **kw: "x")
+        fake = FakeTransport(
+            updates_batches=[[private_message(from_id=42, text="q", update_id=5)]],
+            llm_replies=["answer"])
+        logbuf = io.StringIO()
+        tg, llm, log = _wire(fake, _cfg({42}), logbuf)
+        ledger = RecLedger()
+
+        poll_once(_cfg({42}), tg, llm, log, offset=0,
+                  tools_factory=lambda: [tool], ledger=ledger)
+
+        self.assertEqual(len(ledger.adds), 1)
+        self.assertEqual(ledger.adds[0][1], "gaffer-chat")
+
     def test_no_factory_is_byte_identical_single_completion(self):
         fake = FakeTransport(
             updates_batches=[[private_message(from_id=42, text="q", update_id=5)]],

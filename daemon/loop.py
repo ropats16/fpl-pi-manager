@@ -32,7 +32,7 @@ from daemon.propose import (NO_TOKEN_REPLY, PROPOSE_HINT, is_propose_request,
 
 def process_message(msg, cfg, telegram, llm, logger, assembler=None,
                     approvals=None, learnings=None, proposer=None, builds=None,
-                    tools_factory=None):
+                    tools_factory=None, ledger=None):
     """Handle one incoming Telegram message. Returns True if a reply was sent.
 
     When an `assembler` is wired, the system prompt is assembled fresh from the
@@ -134,8 +134,17 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
     # one-shot, so the downstream plan/learnings/propose parsing is untouched.
     tools = tools_factory() if tools_factory is not None else None
     if tools:
-        reply = run_agent(messages, llm, cfg.model, tools, cfg.chat_caps, logger,
-                          role="gaffer").reply
+        res = run_agent(messages, llm, cfg.model, tools, cfg.chat_caps, logger,
+                        role="gaffer")
+        reply = res.reply
+        # Fold this chat wake's spend (the run_agent loop, ask_helper's run_helper
+        # included — same llm) into the MTD ledger under `gaffer-chat`, so the
+        # ledger that gates chat search also sees what chat spends.
+        if ledger is not None:
+            try:
+                ledger.add(res.cost_usd, source="gaffer-chat")
+            except Exception as e:   # noqa: BLE001 — a ledger blip never mutes a reply
+                logger.event("ledger_error", error=type(e).__name__, detail=str(e))
     else:
         reply = llm.complete(messages)
 
@@ -205,14 +214,15 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
 
 
 def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None,
-              learnings=None, proposer=None, builds=None, tools_factory=None):
+              learnings=None, proposer=None, builds=None, tools_factory=None,
+              ledger=None):
     """One long-poll cycle. Returns the next offset to request."""
     for msg in telegram.get_updates(offset):
         try:
             process_message(msg, cfg, telegram, llm, logger, assembler=assembler,
                             approvals=approvals, learnings=learnings,
                             proposer=proposer, builds=builds,
-                            tools_factory=tools_factory)
+                            tools_factory=tools_factory, ledger=ledger)
         except Exception as e:  # one bad message must not kill the daemon
             logger.event("error", from_id=getattr(msg, "from_id", None),
                          error=type(e).__name__, detail=str(e))
@@ -222,7 +232,7 @@ def poll_once(cfg, telegram, llm, logger, offset, assembler=None, approvals=None
 
 def run(cfg, telegram, llm, logger, should_continue=lambda: True, idle_sleep=1.0,
         assembler=None, approvals=None, learnings=None, proposer=None, builds=None,
-        tools_factory=None):
+        tools_factory=None, ledger=None):
     """Resident loop: long-poll Telegram forever, waking on each message."""
     offset = 0
     logger.event("startup", model=cfg.model, allowlist_size=len(cfg.allowlist))
@@ -231,7 +241,7 @@ def run(cfg, telegram, llm, logger, should_continue=lambda: True, idle_sleep=1.0
             offset = poll_once(cfg, telegram, llm, logger, offset,
                                assembler=assembler, approvals=approvals,
                                learnings=learnings, proposer=proposer, builds=builds,
-                               tools_factory=tools_factory)
+                               tools_factory=tools_factory, ledger=ledger)
         except Exception as e:  # network blip — log and keep cycling
             logger.event("poll_error", error=type(e).__name__, detail=str(e))
             time.sleep(idle_sleep)
