@@ -15,6 +15,7 @@ the #51 decisions so an unchanged Pi env works, env-overridable like the rest.
 import json
 import os
 
+from daemon.agent import Caps
 from daemon.llm import DEFAULT_BASE_URL, DEFAULT_MODEL
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -174,17 +175,35 @@ def load_helper_settings(env=None):
 # 8k at Sol prices is ≤$0.08 a call, worst case.
 DEFAULT_MAX_TOKENS = 8192
 
+# The gaffer chat tool-loop ceilings (spec §3, tier-1). A chat wake that calls
+# tools is a bounded run_agent loop; these are its circuit breakers. Smaller than
+# the helper ceilings — a chat answer delegates, it does not do a full analyst dig.
+DEFAULT_CHAT_CAPS = {"turns": 12, "minutes": 6.0, "cost_usd": 0.40}
+
+
+def load_chat_caps(env=None):
+    """The chat tool-loop caps (spec §3) from defaults + env overrides. Same
+    _int_env/_float_env posture as the helper ceilings — a malformed or
+    out-of-range override falls back to the default for that one field."""
+    env = os.environ if env is None else env
+    d = DEFAULT_CHAT_CAPS
+    return Caps(
+        turns=_int_env(env, "GAFFER_CHAT_MAX_TURNS", d["turns"]),
+        minutes=_float_env(env, "GAFFER_CHAT_MAX_MINUTES", d["minutes"], 0),
+        cost_usd=_float_env(env, "GAFFER_CHAT_MAX_COST_USD", d["cost_usd"], 0))
+
 
 class Config:
     __slots__ = ("allowlist", "telegram_token", "openrouter_key", "model",
                  "base_url", "system_prompt", "odds_api_key", "helpers",
-                 "github_token", "github_repo", "max_tokens")
+                 "github_token", "github_repo", "max_tokens", "chat_caps")
 
     def __init__(self, allowlist, telegram_token, openrouter_key, model,
                  base_url, system_prompt, odds_api_key=None, helpers=None,
                  github_token=None, github_repo=DEFAULT_GITHUB_REPO,
-                 max_tokens=DEFAULT_MAX_TOKENS):
+                 max_tokens=DEFAULT_MAX_TOKENS, chat_caps=None):
         self.max_tokens = max_tokens
+        self.chat_caps = chat_caps if chat_caps is not None else Caps(**DEFAULT_CHAT_CAPS)
         self.allowlist = allowlist
         self.telegram_token = telegram_token
         self.openrouter_key = openrouter_key
@@ -265,4 +284,5 @@ def load_config(env=None):
         github_token=github_token,
         github_repo=env.get("GAFFER_GITHUB_REPO", DEFAULT_GITHUB_REPO),
         max_tokens=_int_env(env, "GAFFER_MAX_TOKENS", DEFAULT_MAX_TOKENS),
+        chat_caps=load_chat_caps(env),
     )

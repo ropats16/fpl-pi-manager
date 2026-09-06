@@ -8,11 +8,12 @@ import io
 import json
 import unittest
 
+from daemon.agent import Tool
 from daemon.config import Config
 from daemon.llm import DEFAULT_BASE_URL
 from daemon.loop import poll_once
 from daemon.runtime import build_stack
-from tests.fakes import FakeTransport, private_message
+from tests.fakes import FakeTransport, private_message, tool_call_message
 
 
 def _cfg(allowlist):
@@ -58,6 +59,61 @@ class AllowlistedFlowTest(unittest.TestCase):
         reply_ev = next(e for e in events if e["event"] == "reply")
         self.assertEqual(reply_ev["prompt"], "q")
         self.assertEqual(reply_ev["reply"], "a")
+
+
+class ChatToolsTest(unittest.TestCase):
+    def test_wired_tools_route_the_reply_through_run_agent(self):
+        # A gaffer tool wired in: the model calls it, then answers; the final
+        # assistant text is what reaches Telegram (spec §4).
+        seen = []
+        tool = Tool("lookup", "d", {"type": "object", "properties": {}, "required": []},
+                    lambda **kw: seen.append(kw) or "TOOL-RESULT")
+        fake = FakeTransport(
+            updates_batches=[[private_message(from_id=42, text="who's fit?", update_id=5)]],
+            llm_replies=[tool_call_message("lookup", {}, "c1"), "final gaffer answer"])
+        logbuf = io.StringIO()
+        tg, llm, log = _wire(fake, _cfg({42}), logbuf)
+
+        poll_once(_cfg({42}), tg, llm, log, offset=0, tools_factory=lambda: [tool])
+
+        self.assertEqual(seen, [{}])                       # the tool ran
+        self.assertEqual(fake.sent, [{"chat_id": 42, "text": "final gaffer answer"}])
+        self.assertEqual(len(fake.llm_requests), 2)        # tool turn + answer
+
+    def test_chat_wake_spend_is_recorded_under_gaffer_chat(self):
+        class RecLedger:
+            def __init__(self):
+                self.adds = []
+
+            def add(self, usd, now=None, source="wake"):
+                self.adds.append((usd, source))
+        tool = Tool("noop", "d", {"type": "object", "properties": {}, "required": []},
+                    lambda **kw: "x")
+        fake = FakeTransport(
+            updates_batches=[[private_message(from_id=42, text="q", update_id=5)]],
+            llm_replies=["answer"])
+        logbuf = io.StringIO()
+        tg, llm, log = _wire(fake, _cfg({42}), logbuf)
+        ledger = RecLedger()
+
+        poll_once(_cfg({42}), tg, llm, log, offset=0,
+                  tools_factory=lambda: [tool], ledger=ledger)
+
+        self.assertEqual(len(ledger.adds), 1)
+        self.assertEqual(ledger.adds[0][1], "gaffer-chat")
+
+    def test_no_factory_is_byte_identical_single_completion(self):
+        fake = FakeTransport(
+            updates_batches=[[private_message(from_id=42, text="q", update_id=5)]],
+            llm_reply="plain")
+        logbuf = io.StringIO()
+        tg, llm, log = _wire(fake, _cfg({42}), logbuf)
+
+        poll_once(_cfg({42}), tg, llm, log, offset=0)
+
+        self.assertEqual(fake.sent, [{"chat_id": 42, "text": "plain"}])
+        self.assertEqual(len(fake.llm_requests), 1)
+        self.assertNotIn("tools", fake.llm_requests[0])
 
 
 class AllowlistDenialTest(unittest.TestCase):

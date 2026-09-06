@@ -42,6 +42,22 @@ class LoadConfigTest(unittest.TestCase):
         llm.complete([{"role": "user", "content": "q"}])
         self.assertEqual(fake.llm_requests[0]["max_tokens"], 8192)
 
+    def test_chat_caps_default_and_env_override(self):
+        # The gaffer chat tool-loop ceilings (spec §3): tier-1, _int_env/float
+        # pattern, junk falls back to the default per field.
+        base = {"GAFFER_ALLOWLIST_USER_IDS": "1", "TELEGRAM_BOT_TOKEN": "t",
+                "OPENROUTER_API_KEY": "k"}
+        caps = load_config(env=base).chat_caps
+        self.assertEqual((caps.turns, caps.minutes, caps.cost_usd), (12, 6.0, 0.40))
+        over = load_config(env=dict(base, GAFFER_CHAT_MAX_TURNS="20",
+                                    GAFFER_CHAT_MAX_MINUTES="10",
+                                    GAFFER_CHAT_MAX_COST_USD="1.5")).chat_caps
+        self.assertEqual((over.turns, over.minutes, over.cost_usd), (20, 10.0, 1.5))
+        junk = load_config(env=dict(base, GAFFER_CHAT_MAX_TURNS="x",
+                                    GAFFER_CHAT_MAX_MINUTES="-1",
+                                    GAFFER_CHAT_MAX_COST_USD="0")).chat_caps
+        self.assertEqual((junk.turns, junk.minutes, junk.cost_usd), (12, 6.0, 0.40))
+
     def test_credentials_directory_takes_precedence_over_env(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "telegram-token"), "w") as f:

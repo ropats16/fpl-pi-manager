@@ -33,7 +33,10 @@ run_agent(messages, llm, model, tools, caps, logger, role, clock=None) -> AgentR
 - No tools → plain `llm.complete`, single turn (today's chat path, unchanged behaviour).
 - Never raises; on cap/error the last assistant text (or a fixed line) is the reply.
 - Every LLM call logs `llm_call` with `role` as today; cost is ledger-counted via `llm.cost_usd`.
-- `run_helper` is refactored onto `run_agent` with **HelperResult and all helper tests unchanged**.
+- `run_helper` **shares the `Tool` internals** (fetch/search become `Tool`s) but keeps
+  its own bespoke loop — per-tool-type ceilings (fetches/searches) plus a cap→write-up
+  re-prompt — which `run_agent`'s turns/minutes/cost model does not express; HelperResult
+  and all helper tests unchanged. (Implemented via §1's escape hatch, not a `run_agent` call.)
 
 ## 2. Gaffer chat tools — `daemon/gaffer_tools.py` (PR 1)
 

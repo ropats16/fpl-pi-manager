@@ -120,6 +120,25 @@ once. Entry id for the fielded picks comes from `FPL_ENTRY_ID` (public, non-secr
 season-state `entry_id` else the season-state squad. Harness is `tests/test_review.py`;
 `MEMORY.md` promotion and the rulebook PR stay Rohit-driven (#11 not wired).
 
+### Gaffer tools (chat)
+
+In chat the gaffer can call tools before it answers. The reply loop swaps
+`llm.complete` for a bounded `run_agent` tool loop (`daemon/agent.py` — the shared
+`Tool` / `Caps` / `AgentResult` core the helper loop also builds on) **only when
+tools are wired**; with none the path is byte-identical to the pre-tool one-shot,
+so the downstream plan / learnings / propose parsing is untouched. `daemon/gaffer_tools.py`
+`build_gaffer_tools(...)` offers nine tools, each capped per chat: `ask_helper`
+(delegate a question to a seat — runs that role's helper, files the answer as a
+Q&A section on its GW report), `read_report`, `read_projections`, `fpl_lookup`
+(public FPL API via the fetcher, bootstrap cached per wake), `search` + `fetch`
+(the analysts' allowlist/scrub), and `open_ticket` / `ticket_status` / `pr_status`
+(a duck-typed git `host`, wired in PR 2 — the ticket tools are simply not offered
+until then; likewise `search`/`fetch` need the key, `ask_helper` the runner). The
+chat ceilings are tier-1 config (`GAFFER_CHAT_MAX_TURNS/MINUTES/COST_USD`). GAFFER.md's
+"Your tools" is the posture: delegate first, search only when no seat covers it,
+open a ticket only when Rohit asks for a capability change — and the team still
+moves only on an explicit `yes`.
+
 ### Helper tool loop (#54)
 
 The first slice of the #52 fan-out: `python3 -m daemon helper <role> [--gw N]` runs one
