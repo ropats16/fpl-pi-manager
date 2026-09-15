@@ -13,7 +13,8 @@ from daemon.config import Config
 from daemon.llm import DEFAULT_BASE_URL
 from daemon.loop import poll_once
 from daemon.runtime import build_stack
-from tests.fakes import FakeTransport, private_message, tool_call_message
+from tests.fakes import (FakeTransport, callback_query, private_message,
+                         tool_call_message)
 
 
 def _cfg(allowlist):
@@ -101,6 +102,49 @@ class ChatToolsTest(unittest.TestCase):
 
         self.assertEqual(len(ledger.adds), 1)
         self.assertEqual(ledger.adds[0][1], "gaffer-chat")
+
+    def test_chat_wake_shows_typing_and_relays_progress_notes(self):
+        # Spec §3: the typing indicator runs through the model/tool phase and a
+        # tool's start/done notes reach the chat BEFORE the final reply.
+        tool = Tool("lookup", "d", {"type": "object", "properties": {}, "required": []},
+                    lambda **kw: "TOOL-RESULT",
+                    progress=lambda phase, args, result: (
+                        "⏳ looking" if phase == "start" else "✅ looked"))
+        fake = FakeTransport(
+            updates_batches=[[private_message(from_id=42, text="q", update_id=5)]],
+            llm_replies=[tool_call_message("lookup", {}, "c1", content="Checking."),
+                         "final answer"])
+        logbuf = io.StringIO()
+        tg, llm, log = _wire(fake, _cfg({42}), logbuf)
+
+        poll_once(_cfg({42}), tg, llm, log, offset=0, tools_factory=lambda: [tool])
+
+        self.assertEqual([s["text"] for s in fake.sent],
+                         ["Checking.", "⏳ looking", "✅ looked", "final answer"])
+        self.assertIn({"chat_id": 42, "action": "typing"}, fake.actions)
+        notes = [e for e in _events(logbuf) if e["event"] == "progress"]
+        self.assertEqual([e["text"] for e in notes], ["Checking.", "⏳ looking", "✅ looked"])
+
+    def test_a_capped_chat_gets_a_final_toolless_answer(self):
+        # Spec §2: the chat wake passes the finish prompt, so a cap no longer
+        # sends the placeholder line when there is evidence to answer from.
+        tool = Tool("lookup", "d", {"type": "object", "properties": {}, "required": []},
+                    lambda **kw: "TOOL-RESULT")
+        fake = FakeTransport(
+            updates_batches=[[private_message(from_id=42, text="q", update_id=5)]],
+            llm_replies=[tool_call_message("lookup", {}, "c1"),
+                         tool_call_message("lookup", {}, "c2"),
+                         "best answer from what I have"])
+        logbuf = io.StringIO()
+        cfg = _cfg({42})
+        cfg.chat_caps.turns = 2
+        tg, llm, log = _wire(fake, cfg, logbuf)
+
+        poll_once(cfg, tg, llm, log, offset=0, tools_factory=lambda: [tool])
+
+        self.assertEqual(fake.sent[-1]["text"], "best answer from what I have")
+        self.assertIn("no more tools", fake.llm_requests[-1]["messages"][-1]["content"])
+        self.assertIn("agent_cap_hit", [e["event"] for e in _events(logbuf)])
 
     def test_no_factory_is_byte_identical_single_completion(self):
         fake = FakeTransport(

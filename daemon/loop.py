@@ -24,10 +24,17 @@ from daemon.build import (BUILD_HINT, cancel_pending_build, commission_build,
                           parse_build, start_pending_build)
 from daemon.learnings import record_learnings
 from daemon.prompt import select_playbook
-from daemon.plan import (append_decision_log, is_approval, is_stop, parse_plan,
-                         plan_summary)
+from daemon.plan import (APPROVE_BUTTONS, append_decision_log, is_approval,
+                         is_stop, parse_plan, plan_summary)
 from daemon.propose import (NO_TOKEN_REPLY, PROPOSE_HINT, is_propose_request,
                             parse_proposal, requested_name)
+
+
+# The safety-net prompt (chat-caps spec §2): when a chat cap trips after tool
+# turns, the gaffer gets one toolless turn to answer from what it gathered.
+FINISH_ON_CAP = ("You have hit the time/turn/cost limit for this chat. Answer Rohit "
+                 "now from what you have already gathered — no more tools. Say "
+                 "plainly what you could not check.")
 
 
 def process_message(msg, cfg, telegram, llm, logger, assembler=None,
@@ -54,7 +61,18 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
         return False
 
     logger.event("wake", from_id=msg.from_id, chat_id=msg.chat_id,
-                 update_id=msg.update_id, text=msg.text)
+                 update_id=msg.update_id, text=msg.text,
+                 **({"callback": True} if msg.callback_id else {}))
+
+    # A button press (spec §4) is the same token on the same gate below — but
+    # ONLY a token. Anything else in the payload is dropped before the model,
+    # and a stale button (nothing pending / not locked) gets a fixed line.
+    if msg.callback_id:
+        telegram.answer_callback(msg.callback_id)
+        if not (is_approval(msg.text) or is_stop(msg.text)):
+            logger.event("drop", reason="callback_not_a_token",
+                         from_id=msg.from_id, update_id=msg.update_id)
+            return False
 
     st = approvals.store.load() if approvals is not None else None
 
@@ -79,6 +97,11 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
             logger.event("stop", gw=st.gw)
             telegram.send_message(msg.chat_id, "⏸ hold — awaiting fresh yes")
             return True
+    if msg.callback_id:
+        # The gate did not consume the press: a stale button never reaches the
+        # model (typed `yes` with nothing pending is chat; a button is not).
+        telegram.send_message(msg.chat_id, "⚠ nothing awaiting that — the button is stale.")
+        return True
 
     # --- deterministic build gate (spec §3) — after the plan gate, no model ----
     # `build #N` / `build` starts the single pending build; `cancel build` clears
@@ -134,8 +157,18 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
     # one-shot, so the downstream plan/learnings/propose parsing is untouched.
     tools = tools_factory() if tools_factory is not None else None
     if tools:
-        res = run_agent(messages, llm, cfg.model, tools, cfg.chat_caps, logger,
-                        role="gaffer")
+        def progress(text):
+            # Spec §3: the gaffer thinking aloud / a staff ask starting and
+            # landing, sent as it happens. A failed ping is logged, never fatal.
+            logger.event("progress", chat_id=msg.chat_id, text=text)
+            try:
+                telegram.send_message(msg.chat_id, text)
+            except Exception as e:   # noqa: BLE001
+                logger.event("progress_error", error=type(e).__name__, detail=str(e))
+        with telegram.typing(msg.chat_id):
+            res = run_agent(messages, llm, cfg.model, tools, cfg.chat_caps, logger,
+                            role="gaffer", finish_on_cap=FINISH_ON_CAP,
+                            progress=progress)
         reply = res.reply
         # Fold this chat wake's spend (the run_agent loop, ask_helper's run_helper
         # included — same llm) into the MTD ledger under `gaffer-chat`, so the
@@ -162,6 +195,7 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
                                   record=select_playbook(msg.text) == "analysis")
 
     send_text = answer
+    buttons = None
     # An iterate is a debate reply that re-emits a full plan block: it becomes
     # the new pending snapshot (fresh yes required) and the machine block is
     # stripped before Telegram (§3② — the block never reaches the human).
@@ -171,6 +205,7 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
             approvals.store.void_carry(plan)
             logger.event("iterate", gw=st.gw)
             send_text = stripped
+            buttons = APPROVE_BUTTONS          # a fresh yes is required (§4)
             if approvals.reports_dir and st.gw is not None:
                 # The full revised brief — the gaffer's dissent on a complied
                 # `change X` included — is the repo record §3④ scores post-GW.
@@ -209,7 +244,7 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
 
     logger.event("reply", from_id=msg.from_id, chat_id=msg.chat_id,
                  prompt=msg.text, reply=send_text)
-    telegram.send_message(msg.chat_id, send_text)
+    telegram.send_message(msg.chat_id, send_text, buttons=buttons)
     return True
 
 

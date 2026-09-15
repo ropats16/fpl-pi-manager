@@ -17,8 +17,8 @@ failure does not mark the touchpoint sent, so it re-sends next tick. Silence
 import json
 from datetime import datetime, timedelta, timezone
 
-from daemon.plan import (append_decision_log, parse_plan, plan_summary,
-                         plans_differ, record_decision)
+from daemon.plan import (APPROVE_BUTTONS, STOP_BUTTONS, append_decision_log,
+                         parse_plan, plan_summary, plans_differ, record_decision)
 from daemon.prompt import estimate_tokens
 from daemon.review import snapshot_path, snapshot_projections
 
@@ -80,12 +80,13 @@ def decide_wake(now_utc, deadline_utc, st):
     return None
 
 
-def _send_all(telegram, allowlist, text, logger, gw):
+def _send_all(telegram, allowlist, text, logger, gw, buttons=None):
     """Send one text to every allowlisted chat. Returns False (and logs) on the
-    first failure so the caller can leave the touchpoint un-marked and retry."""
+    first failure so the caller can leave the touchpoint un-marked and retry.
+    `buttons` (spec §4) rides as an inline keyboard on the message."""
     for chat_id in sorted(allowlist):
         try:
-            telegram.send_message(chat_id=chat_id, text=text)
+            telegram.send_message(chat_id=chat_id, text=text, buttons=buttons)
         except Exception as e:           # noqa: BLE001 — retry next tick, never crash
             logger.event("brief_send_error", gw=gw, chat_id=chat_id,
                          error=type(e).__name__, detail=str(e))
@@ -166,7 +167,8 @@ def _do_draft(llm_complete, assembler_factory, store, telegram, allowlist,
         # helper that never delivered is never silently "covered".
         text = text.rstrip() + "\n\n" + footer
 
-    if not _send_all(telegram, allowlist, text, logger, gw):
+    if not _send_all(telegram, allowlist, text, logger, gw,
+                     buttons=APPROVE_BUTTONS if plan is not None else None):
         return 1
     store.set_pending(gw, plan)          # plan may be None (no usable block)
     store.draft_sent = True
@@ -227,7 +229,8 @@ def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
     if unchanged:
         msg = (f"GW{gw} FINAL — no change since your yes. Locking at T−30m. "
                "Reply STOP to hold.")
-        if not _send_all(telegram, allowlist, tail(msg), logger, gw):
+        if not _send_all(telegram, allowlist, tail(msg), logger, gw,
+                         buttons=STOP_BUTTONS):
             return 1
         store.phase = "locked"
         store.final_sent = True
@@ -238,7 +241,8 @@ def _do_final(llm_complete, assembler_factory, store, telegram, allowlist,
     # Changed, chip present, or nothing approved -> carry-void, fresh yes needed.
     marker = ("chip plan — fresh yes required" if has_chip
               else f"⚠ GW{gw} CHANGED — fresh yes required")
-    if not _send_all(telegram, allowlist, tail(f"{marker}\n\n{text}"), logger, gw):
+    if not _send_all(telegram, allowlist, tail(f"{marker}\n\n{text}"), logger, gw,
+                     buttons=APPROVE_BUTTONS):
         return 1
     store.void_carry(new_plan)
     store.final_sent = True

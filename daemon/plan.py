@@ -22,6 +22,11 @@ from datetime import datetime, timezone
 # §3① — approval is the whole message equal to one of these, case-folded.
 APPROVE_TOKENS = {"yes", "y", "lock", "approve"}
 
+# Inline-keyboard rows (chat-caps spec §4). A press sends the SAME token a typed
+# reply would, through the same allowlist and gate — nothing new is triggerable.
+APPROVE_BUTTONS = [("✅ Approve", "yes")]
+STOP_BUTTONS = [("⛔ Stop", "stop")]
+
 # The gaffer ends a brief with a fenced ```plan { … } ``` JSON block; the daemon
 # freezes it as the approval snapshot and strips it before Telegram (§3②).
 _PLAN_BLOCK = re.compile(r"```plan\b[ \t]*\r?\n(.*?)```", re.DOTALL)

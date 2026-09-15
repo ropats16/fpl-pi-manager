@@ -134,10 +134,24 @@ Q&A section on its GW report), `read_report`, `read_projections`, `fpl_lookup`
 (the analysts' allowlist/scrub), and `open_ticket` / `ticket_status` / `pr_status`
 (a duck-typed git `host`, wired in PR 2 — the ticket tools are simply not offered
 until then; likewise `search`/`fetch` need the key, `ask_helper` the runner). The
-chat ceilings are tier-1 config (`GAFFER_CHAT_MAX_TURNS/MINUTES/COST_USD`). GAFFER.md's
-"Your tools" is the posture: delegate first, search only when no seat covers it,
-open a ticket only when Rohit asks for a capability change — and the team still
-moves only on an explicit `yes`.
+chat ceilings are tier-1 config (`GAFFER_CHAT_MAX_TURNS/MINUTES/COST_USD`; defaults
+40 / 60 / $1.50, a staff ask 12 min × up to 6 per chat — `plans/chat-caps-progress-buttons.md`).
+A cap that trips after tool turns earns one final **toolless** turn so the answer
+comes from what was gathered (`run_agent(finish_on_cap=…)`), and every chat cap logs
+`agent_cap_hit`. GAFFER.md's "Your tools" is the posture: delegate first, ask narrow
+and ask again, search only when no seat covers it, open a ticket only when Rohit asks
+for a capability change — and the team still moves only on an explicit `yes`.
+
+While a chat wake runs, Telegram shows "typing…" (`Telegram.typing`, a keep-alive
+thread) and the loop relays **progress notes** as messages: the gaffer's own text
+riding alongside a tool call, and `ask_helper`'s "⏳ asking <role>: …" / "✅ <role>
+answered — …" (the one tool with a `Tool.progress` note). Approval messages (draft,
+changed final, chat iterate) carry an inline **✅ Approve** button and the unchanged
+final a **⛔ Stop** button. A press arrives as a `callback_query`; the client turns it
+into a message whose text is the token, the loop answers it, and it runs through the
+SAME allowlist and approve/stop gate as typed `yes`/`stop` — any other payload is
+dropped (`drop reason=callback_not_a_token`), and a stale button gets a fixed line,
+never the model. This is the one loosening of the "plain 1:1 messages only" rule.
 
 ### Helper tool loop (#54)
 

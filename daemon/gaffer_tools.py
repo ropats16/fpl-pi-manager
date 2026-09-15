@@ -63,6 +63,17 @@ def _head(text, max_tokens):
     return text if len(text) <= budget else text[:budget].rstrip() + "…"
 
 
+def _ask_note(phase, arguments, result):
+    """The one progress note in chat (spec §3): a staff ask starting, and its
+    answer's first line landing. Every other tool is silent."""
+    role = (arguments or {}).get("role", "staff")
+    if phase == "start":
+        q = " ".join(str((arguments or {}).get("question", "")).split())
+        return f"⏳ asking {role}: {q[:160]}"
+    first = next((l.strip() for l in str(result or "").splitlines() if l.strip()), "")
+    return f"✅ {role} answered — {first[:200]}"
+
+
 def build_gaffer_tools(cfg, workspace_root, state_path, reports_dir, projections_path,
                        gw, fetcher, searcher, helper_runner, host, logger=None):
     """Return the gaffer's chat tools (spec §2). Only the tools whose dependency
@@ -236,7 +247,8 @@ def build_gaffer_tools(cfg, workspace_root, state_path, reports_dir, projections
             {"type": "object", "properties": {
                 "role": {"type": "string", "enum": list(ASKABLE_ROLES)},
                 "question": {"type": "string"}},
-             "required": ["role", "question"]}, ask_helper, cap=6))
+             "required": ["role", "question"]}, ask_helper, cap=6,
+            progress=_ask_note))
     if reports_dir is not None:
         tools.append(Tool("read_report",
             "Read a staff member's written report for this (or a given) gameweek.",

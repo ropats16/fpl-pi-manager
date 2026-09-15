@@ -47,10 +47,13 @@ class _Recorder:
         self.sent = []
         self.fail = fail
 
-    def send_message(self, chat_id, text):
+    def send_message(self, chat_id, text, buttons=None):
         if self.fail:
             raise RuntimeError("sendMessage failed")
-        self.sent.append({"chat_id": chat_id, "text": text})
+        entry = {"chat_id": chat_id, "text": text}
+        if buttons:
+            entry["buttons"] = list(buttons)
+        self.sent.append(entry)
 
 
 class _Assembler:
@@ -182,6 +185,7 @@ class DraftFlowTest(BriefHarness):
         self.assertEqual(len(tg.sent), 1)
         self.assertNotIn("```", tg.sent[0]["text"])           # block stripped
         self.assertIn("GW2 brief", tg.sent[0]["text"])
+        self.assertEqual(tg.sent[0]["buttons"], [("✅ Approve", "yes")])   # spec §4
 
         st = ApprovalStore(self.approval_path).load()
         self.assertEqual(st.phase, "awaiting_approval")
@@ -267,6 +271,7 @@ class FinalFlowTest(BriefHarness):
         rc, tg = self.run_at("2026-08-29T09:00:00Z", [_brief_with_block(dict(p))])
         self.assertEqual(rc, 0)
         self.assertIn("no change since your yes", tg.sent[0]["text"])
+        self.assertEqual(tg.sent[0]["buttons"], [("⛔ Stop", "stop")])      # spec §4
         st = ApprovalStore(self.approval_path).load()
         self.assertEqual(st.phase, "locked")
         self.assertTrue(st.final_sent)
@@ -279,6 +284,7 @@ class FinalFlowTest(BriefHarness):
         self.assertEqual(rc, 0)
         self.assertIn("CHANGED", tg.sent[0]["text"])
         self.assertIn("fresh yes required", tg.sent[0]["text"])
+        self.assertEqual(tg.sent[0]["buttons"], [("✅ Approve", "yes")])   # spec §4
         st = ApprovalStore(self.approval_path).load()
         self.assertEqual(st.phase, "awaiting_approval")
         self.assertIsNone(st.approved_plan)

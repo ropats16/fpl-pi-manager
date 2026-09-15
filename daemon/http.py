@@ -129,7 +129,9 @@ class FakeTransport:
         self.pages = dict(pages or {})
         self.search_reply = search_reply
         self.usage = dict(usage or DEFAULT_USAGE)
-        self.sent = []          # [{chat_id, text}]
+        self.sent = []          # [{chat_id, text[, buttons]}] — buttons only when sent
+        self.actions = []       # [{chat_id, action}] — sendChatAction (typing) posts
+        self.answered = []      # [callback_query_id] — answerCallbackQuery posts
         self.llm_requests = []  # [parsed request body dict] (helper/gaffer calls)
         self.search_requests = []  # [parsed request body dict] (plugin sub-calls)
         self.requests = []      # [(method, url)] — every request, in order
@@ -155,8 +157,22 @@ class FakeTransport:
             return _json_response({"ok": True, "result": batch})
         if "/sendMessage" in url:
             payload = json.loads(body.decode("utf-8"))
-            self.sent.append({"chat_id": payload["chat_id"], "text": payload["text"]})
+            entry = {"chat_id": payload["chat_id"], "text": payload["text"]}
+            markup = payload.get("reply_markup", {}).get("inline_keyboard")
+            if markup:
+                entry["buttons"] = [(b["text"], b["callback_data"])
+                                    for row in markup for b in row]
+            self.sent.append(entry)
             return _json_response({"ok": True, "result": {"message_id": 1}})
+        if "/sendChatAction" in url:
+            payload = json.loads(body.decode("utf-8"))
+            self.actions.append({"chat_id": payload["chat_id"],
+                                 "action": payload["action"]})
+            return _json_response({"ok": True, "result": True})
+        if "/answerCallbackQuery" in url:
+            payload = json.loads(body.decode("utf-8"))
+            self.answered.append(payload["callback_query_id"])
+            return _json_response({"ok": True, "result": True})
         if "chat/completions" in url:
             payload = json.loads(body.decode("utf-8"))
             if payload.get("plugins"):

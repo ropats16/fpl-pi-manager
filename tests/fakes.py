@@ -21,3 +21,20 @@ def private_message(from_id, text, chat_id=None, update_id=1):
         },
     }
 
+
+
+def callback_query(from_id, data, chat_id=None, update_id=1, chat_type="private",
+                   callback_id="cb1"):
+    """A Telegram getUpdates entry for an inline-keyboard button press."""
+    chat_id = from_id if chat_id is None else chat_id
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": callback_id,
+            "from": {"id": from_id, "is_bot": False, "first_name": "T"},
+            "message": {"message_id": 100,
+                        "chat": {"id": chat_id, "type": chat_type},
+                        "text": "the brief"},
+            "data": data,
+        },
+    }
