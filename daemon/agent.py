@@ -98,7 +98,7 @@ def _note(tool, phase, arguments, result):
     """A Tool's progress note, or None — a note-writer that raises is silent."""
     try:
         return tool.progress(phase, arguments, result)
-    except Exception:                    # noqa: BLE001
+    except Exception:                    # noqa: BLE001 — a note is decoration, never a failure
         return None
 
 
@@ -205,22 +205,25 @@ def run_agent(messages, llm, model, tools, caps, logger, role, clock=None,
             messages.append({"role": "tool", "tool_call_id": call.id,
                              "content": result if isinstance(result, str) else str(result)})
 
-    if res.status.startswith("cap_hit"):
-        logger.event("agent_cap_hit", role=role, status=res.status, turns=res.turns,
-                     cost_usd=round(llm.cost_usd - cost0, 6))
     if (finish_on_cap and res.turns > 0 and res.status not in ("ok", "stopped")
             and not (res.reply or "").strip()):
         # The safety net (spec §2): one toolless turn to answer from the tool
         # results already in `messages`. A failure here falls through to the
-        # placeholder line, never up to the caller.
-        messages.append({"role": "user", "content": finish_on_cap})
+        # placeholder line, never up to the caller. `{status}` in the prompt
+        # names the ceiling that tripped.
+        messages.append({"role": "user",
+                         "content": finish_on_cap.replace("{status}", res.status)})
         try:
             final = llm.chat(messages, model=model, role=role)
             res.turns += 1
             res.reply = final.content
-        except Exception as e:               # noqa: BLE001
+        except Exception as e:               # noqa: BLE001 — the placeholder line is the floor
             logger.event("agent_error", role=role, turns=res.turns, phase="finish",
                          error=f"{type(e).__name__}: {e}"[:200])
+    if res.status.startswith("cap_hit"):
+        # After the finish turn, so the event carries the whole wake's spend.
+        logger.event("agent_cap_hit", role=role, status=res.status, turns=res.turns,
+                     cost_usd=round(llm.cost_usd - cost0, 6))
     if not (res.reply or "").strip() and res.status != "ok":
         res.reply = last_content.strip() or _NO_REPLY
     res.cost_usd = llm.cost_usd - cost0

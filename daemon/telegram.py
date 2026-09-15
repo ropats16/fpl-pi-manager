@@ -118,10 +118,7 @@ class Telegram:
     def answer_callback(self, callback_id):
         """Acknowledge a button press (clears the client's spinner). Best-effort:
         a failure here changes nothing about how the press was handled."""
-        try:
-            self._post("answerCallbackQuery", {"callback_query_id": callback_id})
-        except Exception:                # noqa: BLE001
-            pass
+        self._post_quiet("answerCallbackQuery", {"callback_query_id": callback_id})
 
     def typing(self, chat_id):
         """Context manager: keep the chat's "typing…" indicator alive while the
@@ -131,13 +128,23 @@ class Telegram:
         return _Typing(self, chat_id, self._typing_interval)
 
     def _chat_action(self, chat_id, action="typing"):
+        self._post_quiet("sendChatAction", {"chat_id": chat_id, "action": action})
+
+    def _post_quiet(self, method, payload):
+        """A cosmetic call (spinner, typing dot): its failure is not an event —
+        the wake it decorates is logged on its own path."""
         try:
-            self._post("sendChatAction", {"chat_id": chat_id, "action": action})
-        except Exception:                # noqa: BLE001
+            self._post(method, payload)
+        except Exception:                # noqa: BLE001 — cosmetic, never a failed wake
             pass
 
 
 class _Typing:
+    """The `Telegram.typing` context: one keep-alive thread per `with` block.
+    Not re-entrant — build a fresh one per wake (the loop does)."""
+
+    __slots__ = ("_tg", "_chat_id", "_interval", "_stop", "_thread")
+
     def __init__(self, telegram, chat_id, interval):
         self._tg = telegram
         self._chat_id = chat_id

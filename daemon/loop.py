@@ -16,6 +16,7 @@ second machine block the loop strips: it is vetted and appended before the plan
 parse runs, so both blocks are gone by the time Telegram sees the text.
 """
 
+import re
 import time
 
 from daemon.agent import run_agent
@@ -32,9 +33,18 @@ from daemon.propose import (NO_TOKEN_REPLY, PROPOSE_HINT, is_propose_request,
 
 # The safety-net prompt (chat-caps spec §2): when a chat cap trips after tool
 # turns, the gaffer gets one toolless turn to answer from what it gathered.
-FINISH_ON_CAP = ("You have hit the time/turn/cost limit for this chat. Answer Rohit "
-                 "now from what you have already gathered — no more tools. Say "
-                 "plainly what you could not check.")
+FINISH_ON_CAP = ("You have hit the {status} limit for this chat. Answer Rohit now "
+                 "from what you have already gathered — no more tools. Say plainly "
+                 "what you could not check.")
+
+# Any fenced block (```plan / ```learnings / ```propose / ```build …) in a
+# progress note is stripped before Telegram: a machine block riding with a tool
+# call is neither parsed nor shown (§3② "the block never reaches the human").
+_FENCE = re.compile(r"```.*?```", re.DOTALL)
+
+
+def _strip_fences(text):
+    return re.sub(r"\n{3,}", "\n\n", _FENCE.sub("", text or "")).strip()
 
 
 def process_message(msg, cfg, telegram, llm, logger, assembler=None,
@@ -160,10 +170,13 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
         def progress(text):
             # Spec §3: the gaffer thinking aloud / a staff ask starting and
             # landing, sent as it happens. A failed ping is logged, never fatal.
+            text = _strip_fences(text)
+            if not text:
+                return
             logger.event("progress", chat_id=msg.chat_id, text=text)
             try:
                 telegram.send_message(msg.chat_id, text)
-            except Exception as e:   # noqa: BLE001
+            except Exception as e:   # noqa: BLE001 — a lost note never mutes the reply
                 logger.event("progress_error", error=type(e).__name__, detail=str(e))
         with telegram.typing(msg.chat_id):
             res = run_agent(messages, llm, cfg.model, tools, cfg.chat_caps, logger,
@@ -179,7 +192,8 @@ def process_message(msg, cfg, telegram, llm, logger, assembler=None,
             except Exception as e:   # noqa: BLE001 — a ledger blip never mutes a reply
                 logger.event("ledger_error", error=type(e).__name__, detail=str(e))
     else:
-        reply = llm.complete(messages)
+        with telegram.typing(msg.chat_id):
+            reply = llm.complete(messages)
 
     # The learnings diary (#20) reads the RAW reply and hands back the text with
     # its own machine block removed. Only a question that routed to the analysis

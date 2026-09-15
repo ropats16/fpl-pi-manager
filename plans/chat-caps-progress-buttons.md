@@ -77,7 +77,11 @@ behaviour, no extra call. The chat wake passes:
   and return; the gate runs as for typed text; if the gate did not consume it
   (nothing pending / not locked) reply `⚠ nothing awaiting that` and return —
   a stale button never reaches the model.
-- Where the buttons ride: draft brief and changed final → `✅ Approve` (`yes`);
+- Progress notes are stripped of any fenced block before they are sent (a
+  ```plan / ```learnings block riding with a tool call never reaches the
+  human, §3② — and is not parsed either; only the final reply is).
+- Where the buttons ride: draft brief (only when it carried a plan — no plan,
+  nothing to approve) and changed final → `✅ Approve` (`yes`);
   unchanged final ("locking at T−30m") → `⛔ Stop` (`stop`); a chat iterate
   that re-emits a plan → `✅ Approve`. Approve receipt itself has no buttons.
 - `FakeTransport`: records `sendChatAction` in `actions`, answers

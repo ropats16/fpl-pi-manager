@@ -284,6 +284,35 @@ class FinishOnCapTest(AgentHarness):
         self.assertIn("reached a limit", res.reply)
         self.assertEqual(res.status, "cap_hit:turns")
 
+    def test_an_llm_error_after_a_tool_turn_also_earns_the_final_turn(self):
+        # Spec §2: "ends on cap_hit:* or error". The 2nd call blows up (a
+        # drained per-model queue raises inside the transport), the 3rd answers.
+        class Flaky(FakeTransport):
+            def request(self, method, url, headers=None, body=None):
+                if "chat/completions" in url and len(self.llm_requests) == 1:
+                    self.llm_requests.append({"boom": True})
+                    raise RuntimeError("502 from upstream")
+                return super().request(method, url, headers, body)
+        t = Flaky(llm_replies=[tool_call_message("lookup", {}, "c1"), "salvaged"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], CAPS, logger, role="gaffer",
+                        finish_on_cap="answer now")
+        self.assertEqual(res.status, "error")
+        self.assertEqual(res.reply, "salvaged")
+
+    def test_the_cap_event_counts_the_final_turn_spend(self):
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {}, "c1"),
+            tool_call_message("lookup", {}, "c2"), "summary"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], Caps(turns=2, minutes=6, cost_usd=1.0),
+                        logger, role="gaffer", finish_on_cap="answer now")
+        ev = self._events("agent_cap_hit")[0]
+        self.assertEqual(ev["turns"], 3)
+        self.assertAlmostEqual(ev["cost_usd"], res.cost_usd, places=6)
+
     def test_a_cap_before_any_tool_turn_earns_no_final_turn(self):
         # turns=0 cap: nothing gathered, nothing to summarise from.
         t = FakeTransport(llm_replies=["unreached"])

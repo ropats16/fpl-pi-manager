@@ -125,6 +125,31 @@ class ChatToolsTest(unittest.TestCase):
         notes = [e for e in _events(logbuf) if e["event"] == "progress"]
         self.assertEqual([e["text"] for e in notes], ["Checking.", "⏳ looking", "✅ looked"])
 
+    def test_a_machine_block_riding_with_a_tool_call_never_reaches_the_chat(self):
+        # §3② "the block never reaches the human": think-aloud text is sent as
+        # a progress note, so any fenced block in it is stripped first.
+        tool = Tool("lookup", "d", {"type": "object", "properties": {}, "required": []},
+                    lambda **kw: "TOOL-RESULT")
+        aloud = "Leaning Salah.\n\n```plan\n{\"captain\": \"Salah\"}\n```\n\nChecking."
+        fake = FakeTransport(
+            updates_batches=[[private_message(from_id=42, text="q", update_id=5)]],
+            llm_replies=[tool_call_message("lookup", {}, "c1", content=aloud), "final"])
+        logbuf = io.StringIO()
+        tg, llm, log = _wire(fake, _cfg({42}), logbuf)
+
+        poll_once(_cfg({42}), tg, llm, log, offset=0, tools_factory=lambda: [tool])
+
+        self.assertEqual([s["text"] for s in fake.sent], ["Leaning Salah.\n\nChecking.", "final"])
+
+    def test_a_toolless_chat_wake_also_shows_typing(self):
+        fake = FakeTransport(
+            updates_batches=[[private_message(from_id=42, text="q", update_id=5)]],
+            llm_reply="plain")
+        logbuf = io.StringIO()
+        tg, llm, log = _wire(fake, _cfg({42}), logbuf)
+        poll_once(_cfg({42}), tg, llm, log, offset=0)
+        self.assertIn({"chat_id": 42, "action": "typing"}, fake.actions)
+
     def test_a_capped_chat_gets_a_final_toolless_answer(self):
         # Spec §2: the chat wake passes the finish prompt, so a cap no longer
         # sends the placeholder line when there is evidence to answer from.
@@ -143,7 +168,9 @@ class ChatToolsTest(unittest.TestCase):
         poll_once(cfg, tg, llm, log, offset=0, tools_factory=lambda: [tool])
 
         self.assertEqual(fake.sent[-1]["text"], "best answer from what I have")
-        self.assertIn("no more tools", fake.llm_requests[-1]["messages"][-1]["content"])
+        final_prompt = fake.llm_requests[-1]["messages"][-1]["content"]
+        self.assertIn("no more tools", final_prompt)
+        self.assertIn("cap_hit:turns", final_prompt)           # names the cap it hit
         self.assertIn("agent_cap_hit", [e["event"] for e in _events(logbuf)])
 
     def test_no_factory_is_byte_identical_single_completion(self):
