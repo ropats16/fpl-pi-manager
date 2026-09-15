@@ -48,7 +48,7 @@ class LoadConfigTest(unittest.TestCase):
         base = {"GAFFER_ALLOWLIST_USER_IDS": "1", "TELEGRAM_BOT_TOKEN": "t",
                 "OPENROUTER_API_KEY": "k"}
         caps = load_config(env=base).chat_caps
-        self.assertEqual((caps.turns, caps.minutes, caps.cost_usd), (12, 6.0, 0.40))
+        self.assertEqual((caps.turns, caps.minutes, caps.cost_usd), (40, 60.0, 1.50))
         over = load_config(env=dict(base, GAFFER_CHAT_MAX_TURNS="20",
                                     GAFFER_CHAT_MAX_MINUTES="10",
                                     GAFFER_CHAT_MAX_COST_USD="1.5")).chat_caps
@@ -56,7 +56,7 @@ class LoadConfigTest(unittest.TestCase):
         junk = load_config(env=dict(base, GAFFER_CHAT_MAX_TURNS="x",
                                     GAFFER_CHAT_MAX_MINUTES="-1",
                                     GAFFER_CHAT_MAX_COST_USD="0")).chat_caps
-        self.assertEqual((junk.turns, junk.minutes, junk.cost_usd), (12, 6.0, 0.40))
+        self.assertEqual((junk.turns, junk.minutes, junk.cost_usd), (40, 60.0, 1.50))
 
     def test_credentials_directory_takes_precedence_over_env(self):
         with tempfile.TemporaryDirectory() as d:

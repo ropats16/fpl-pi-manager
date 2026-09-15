@@ -4,7 +4,7 @@ import unittest
 
 from daemon.http import Response
 from daemon.telegram import MAX_MESSAGE_CHARS, Telegram, TelegramError, split_message
-from tests.fakes import FakeTransport, private_message
+from tests.fakes import FakeTransport, callback_query, private_message
 
 
 class _OkFalseTransport:
@@ -120,6 +120,90 @@ class SendMessageTest(unittest.TestCase):
         tp = _ScriptedSendTransport(ok_sequence=[False, False])
         with self.assertRaises(TelegramError):
             Telegram(token="TT", transport=tp).send_message(chat_id=42, text="**hi**")
+
+
+class CallbackQueryTest(unittest.TestCase):
+    """Chat-caps spec §4: a private-chat button press is a Message whose text is
+    the callback data, tagged with `callback_id` so the loop can answer it."""
+
+    def test_parses_a_private_button_press(self):
+        t = Telegram(token="TT", transport=FakeTransport(
+            updates_batches=[[callback_query(from_id=42, data="yes", update_id=9,
+                                             callback_id="cb77")]]))
+        msgs = t.get_updates(offset=0)
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual((msgs[0].from_id, msgs[0].chat_id, msgs[0].text,
+                          msgs[0].update_id, msgs[0].callback_id),
+                         (42, 42, "yes", 9, "cb77"))
+
+    def test_a_plain_message_has_no_callback_id(self):
+        t = Telegram(token="TT", transport=FakeTransport(
+            updates_batches=[[private_message(from_id=42, text="hi")]]))
+        self.assertIsNone(t.get_updates(offset=0)[0].callback_id)
+
+    def test_a_group_button_press_is_dropped(self):
+        t = Telegram(token="TT", transport=FakeTransport(
+            updates_batches=[[callback_query(from_id=42, data="yes", chat_id=-100,
+                                             chat_type="group")]]))
+        self.assertEqual(t.get_updates(offset=0), [])
+
+    def test_answer_callback_posts_the_id_and_never_raises(self):
+        fake = FakeTransport()
+        Telegram(token="TT", transport=fake).answer_callback("cb77")
+        self.assertEqual(fake.answered, ["cb77"])
+        Telegram(token="TT", transport=_OkFalseTransport()).answer_callback("cb1")
+
+
+class ButtonsTest(unittest.TestCase):
+    def test_buttons_ride_on_the_last_chunk_only(self):
+        paras = [f"Para {i}. " + ("word " * 120).strip() for i in range(20)]
+        fake = FakeTransport()
+        Telegram(token="TT", transport=fake).send_message(
+            chat_id=42, text="\n\n".join(paras), buttons=[("✅ Approve", "yes")])
+        self.assertGreaterEqual(len(fake.sent), 3)
+        self.assertTrue(all("buttons" not in s for s in fake.sent[:-1]))
+        self.assertEqual(fake.sent[-1]["buttons"], [("✅ Approve", "yes")])
+
+    def test_no_buttons_means_no_reply_markup_key(self):
+        fake = FakeTransport()
+        Telegram(token="TT", transport=fake).send_message(chat_id=42, text="hello")
+        self.assertEqual(fake.sent, [{"chat_id": 42, "text": "hello"}])
+
+    def test_keyboard_is_one_row_of_callback_buttons_on_html_and_fallback(self):
+        tp = _ScriptedSendTransport(ok_sequence=[False, True])
+        Telegram(token="TT", transport=tp).send_message(
+            chat_id=42, text="**hi**", buttons=[("✅ Approve", "yes"), ("⛔ Stop", "stop")])
+        self.assertEqual(len(tp.sends), 2)
+        for payload in tp.sends:
+            self.assertEqual(payload["reply_markup"], {"inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": "yes"},
+                {"text": "⛔ Stop", "callback_data": "stop"}]]})
+
+
+class TypingTest(unittest.TestCase):
+    def test_typing_posts_a_chat_action_while_the_block_runs(self):
+        fake = FakeTransport()
+        t = Telegram(token="TT", transport=fake)
+        with t.typing(42):
+            pass
+        self.assertEqual(fake.actions[0], {"chat_id": 42, "action": "typing"})
+
+    def test_typing_keeps_posting_while_the_block_runs(self):
+        import time
+        fake = FakeTransport()
+        t = Telegram(token="TT", transport=fake, typing_interval=0.01)
+        with t.typing(42):
+            time.sleep(0.08)
+        self.assertGreaterEqual(len(fake.actions), 3)
+        n = len(fake.actions)
+        time.sleep(0.05)
+        self.assertEqual(len(fake.actions), n)          # stopped on exit
+
+    def test_a_failing_action_never_breaks_the_block(self):
+        t = Telegram(token="TT", transport=_OkFalseTransport())
+        with t.typing(42):
+            ran = True
+        self.assertTrue(ran)
 
 
 if __name__ == "__main__":

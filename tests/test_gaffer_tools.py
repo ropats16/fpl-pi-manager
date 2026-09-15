@@ -118,9 +118,22 @@ class InventoryTest(GafferToolsHarness):
                                       "fpl_lookup", "search", "fetch", "open_ticket",
                                       "ticket_status", "pr_status"})
         caps = {n: t.cap for n, t in tools.items()}
-        self.assertEqual(caps, {"ask_helper": 2, "read_report": 6, "read_projections": 6,
+        self.assertEqual(caps, {"ask_helper": 6, "read_report": 6, "read_projections": 6,
                                 "fpl_lookup": 6, "search": 3, "fetch": 5,
                                 "open_ticket": 1, "ticket_status": 4, "pr_status": 4})
+
+    def test_ask_helper_is_the_one_tool_with_progress_notes(self):
+        tools, _ = self._build()
+        ask = tools["ask_helper"]
+        self.assertIsNotNone(ask.progress)
+        self.assertTrue(all(t.progress is None for n, t in tools.items()
+                            if n != "ask_helper"))
+        self.assertEqual(ask.progress("start", {"role": "fixtures",
+                                                "question": "Shaw replacements?"}, None),
+                         "⏳ asking fixtures: Shaw replacements?")
+        self.assertEqual(ask.progress("done", {"role": "fixtures"},
+                                      "Line one of the answer.\nLine two."),
+                         "✅ fixtures answered — Line one of the answer.")
 
     def test_missing_dependencies_drop_their_tools(self):
         tools, _ = self._build(host=None, searcher=None, fetcher=None,

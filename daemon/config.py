@@ -182,9 +182,11 @@ def load_helper_settings(env=None):
 DEFAULT_MAX_TOKENS = 8192
 
 # The gaffer chat tool-loop ceilings (spec §3, tier-1). A chat wake that calls
-# tools is a bounded run_agent loop; these are its circuit breakers. Smaller than
-# the helper ceilings — a chat answer delegates, it does not do a full analyst dig.
-DEFAULT_CHAT_CAPS = {"turns": 12, "minutes": 6.0, "cost_usd": 0.40}
+# tools is a bounded run_agent loop; these are its circuit breakers — ceilings,
+# not targets. 60 min / $1.50 so an open-ended question can fan out several
+# 12-min staff asks and still get its final turn (the 6-min cap muted two
+# 13–14 Sep chats: two asks ran 11 min, plans/chat-caps-progress-buttons.md).
+DEFAULT_CHAT_CAPS = {"turns": 40, "minutes": 60.0, "cost_usd": 1.50}
 
 
 def load_chat_caps(env=None):

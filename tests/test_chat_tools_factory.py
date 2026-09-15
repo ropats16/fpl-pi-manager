@@ -79,6 +79,9 @@ class AskHelperWiringTest(ChatFactoryHarness):
             self.assertEqual(self.recorded[0]["task"], "is Saka fit?")
             self.assertEqual(self.recorded[0]["caps"], ASK_HELPER_CAPS)
             self.assertTrue(self.recorded[0]["search"])         # full ledger
+        # An ask may run 12 min with 6 searches / 10 fetches (chat-caps spec §1).
+        self.assertEqual(ASK_HELPER_CAPS, {"turns": 10, "minutes": 12,
+                                           "searches": 6, "fetches": 10})
 
     def test_search_off_ledger_drops_search_and_runs_ask_fetch_only(self):
         import tempfile
