@@ -215,3 +215,139 @@ class ErrorTest(AgentHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CapLogTest(AgentHarness):
+    def test_a_cap_ends_the_loop_with_an_agent_cap_hit_event(self):
+        replies = [tool_call_message("lookup", {}, f"c{i}") for i in range(10)]
+        t = FakeTransport(llm_replies=replies)
+        llm, logger = self._llm(t)
+        run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                  [self._tool("lookup")], Caps(turns=2, minutes=6, cost_usd=1.0),
+                  logger, role="gaffer")
+        ev = self._events("agent_cap_hit")
+        self.assertEqual(len(ev), 1)
+        self.assertEqual((ev[0]["role"], ev[0]["status"], ev[0]["turns"]),
+                         ("gaffer", "cap_hit:turns", 2))
+        self.assertIn("cost_usd", ev[0])
+
+    def test_a_clean_finish_logs_no_cap_event(self):
+        t = FakeTransport(llm_replies=[tool_call_message("lookup", {}, "c1"), "done"])
+        llm, logger = self._llm(t)
+        run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                  [self._tool("lookup")], CAPS, logger, role="gaffer")
+        self.assertEqual(self._events("agent_cap_hit"), [])
+
+
+class FinishOnCapTest(AgentHarness):
+    """Spec §2: with `finish_on_cap` set, a cap after tool turns earns ONE more
+    toolless call whose text is the reply; status keeps the cap name."""
+
+    def test_final_toolless_turn_answers_from_what_was_gathered(self):
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {}, "c1"),
+            tool_call_message("lookup", {}, "c2"),
+            "summary from gathered facts"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], Caps(turns=2, minutes=6, cost_usd=1.0),
+                        logger, role="gaffer", finish_on_cap="answer now, no tools")
+        self.assertEqual(res.reply, "summary from gathered facts")
+        self.assertEqual(res.status, "cap_hit:turns")
+        self.assertEqual(res.turns, 3)
+        self.assertEqual(len(t.llm_requests), 3)
+        final = t.llm_requests[-1]
+        self.assertNotIn("tools", final)                       # no tools offered
+        self.assertEqual(final["messages"][-1]["role"], "user")
+        self.assertIn("answer now", final["messages"][-1]["content"])
+        self.assertEqual(final["messages"][-2]["role"], "tool")   # evidence kept
+
+    def test_without_finish_on_cap_no_extra_call_is_made(self):
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {}, "c1"),
+            tool_call_message("lookup", {}, "c2"), "unreached"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], Caps(turns=2, minutes=6, cost_usd=1.0),
+                        logger, role="gaffer")
+        self.assertEqual(len(t.llm_requests), 2)
+        self.assertIn("reached a limit", res.reply)
+
+    def test_a_failed_final_turn_falls_back_to_the_placeholder(self):
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {}, "c1"),
+            tool_call_message("lookup", {}, "c2"), ""])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], Caps(turns=2, minutes=6, cost_usd=1.0),
+                        logger, role="gaffer", finish_on_cap="answer now")
+        self.assertIn("reached a limit", res.reply)
+        self.assertEqual(res.status, "cap_hit:turns")
+
+    def test_a_cap_before_any_tool_turn_earns_no_final_turn(self):
+        # turns=0 cap: nothing gathered, nothing to summarise from.
+        t = FakeTransport(llm_replies=["unreached"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], Caps(turns=0, minutes=6, cost_usd=1.0),
+                        logger, role="gaffer", finish_on_cap="answer now")
+        self.assertEqual(len(t.llm_requests), 0)
+        self.assertIn("reached a limit", res.reply)
+
+    def test_a_stop_earns_no_final_turn(self):
+        # The engineer's `stop` does its own finish (spec §4); no extra call here.
+        t = FakeTransport(llm_replies=[tool_call_message("lookup", {}, "c1"), "unreached"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], CAPS, logger, role="gaffer",
+                        stop=lambda: len(t.llm_requests) > 0, finish_on_cap="answer now")
+        self.assertEqual(res.status, "stopped")
+        self.assertEqual(len(t.llm_requests), 1)
+
+
+class ProgressTest(AgentHarness):
+    """Spec §3: `progress(text)` hears the model thinking aloud (text riding
+    with tool calls) and a Tool's own start/done notes, in order."""
+
+    def _noting_tool(self):
+        def note(phase, arguments, result):
+            if phase == "start":
+                return f"⏳ looking up {arguments.get('q')}"
+            return f"✅ lookup done — {result}"
+        tool = self._tool("lookup")
+        tool.progress = note
+        return tool
+
+    def test_think_aloud_and_tool_notes_arrive_in_order(self):
+        heard = []
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {"q": "shaw"}, "c1", content="Checking Shaw first."),
+            "final"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._noting_tool()], CAPS, logger, role="gaffer",
+                        progress=heard.append)
+        self.assertEqual(res.reply, "final")
+        self.assertEqual(heard, ["Checking Shaw first.", "⏳ looking up shaw",
+                                 "✅ lookup done — lookup result"])
+
+    def test_a_final_answer_is_not_a_progress_note(self):
+        heard = []
+        t = FakeTransport(llm_replies=["just an answer"])
+        llm, logger = self._llm(t)
+        run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                  [self._tool("lookup")], CAPS, logger, role="gaffer",
+                  progress=heard.append)
+        self.assertEqual(heard, [])
+
+    def test_a_tool_without_a_note_and_a_raising_progress_are_both_silent(self):
+        def boom(text):
+            raise RuntimeError("telegram down")
+        t = FakeTransport(llm_replies=[
+            tool_call_message("lookup", {}, "c1", content="thinking"), "final"])
+        llm, logger = self._llm(t)
+        res = run_agent([{"role": "user", "content": "hi"}], llm, llm.model,
+                        [self._tool("lookup")], CAPS, logger, role="gaffer",
+                        progress=boom)
+        self.assertEqual(res.reply, "final")          # a bad ping never breaks the run
+        self.assertEqual(res.status, "ok")

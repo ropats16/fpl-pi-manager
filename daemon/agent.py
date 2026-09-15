@@ -35,14 +35,18 @@ class Tool:
     dict; `fn(**kwargs) -> str` runs at the tool boundary; `cap` (int | None) is
     the max calls per run — a call over it returns a fixed result, counted."""
 
-    __slots__ = ("name", "description", "parameters", "fn", "cap")
+    __slots__ = ("name", "description", "parameters", "fn", "cap", "progress")
 
-    def __init__(self, name, description, parameters, fn, cap=None):
+    def __init__(self, name, description, parameters, fn, cap=None, progress=None):
         self.name = name
         self.description = description
         self.parameters = parameters
         self.fn = fn
         self.cap = cap
+        # Optional `progress(phase, arguments, result) -> str | None`: a human
+        # note for the chat while the tool runs (`phase` "start", result None)
+        # and when it lands ("done"). None = a silent tool (the default).
+        self.progress = progress
 
     def schema(self):
         """The OpenAI-compatible function declaration the LLM client sends."""
@@ -90,8 +94,16 @@ class AgentResult:
         self.status = "ok"
 
 
+def _note(tool, phase, arguments, result):
+    """A Tool's progress note, or None — a note-writer that raises is silent."""
+    try:
+        return tool.progress(phase, arguments, result)
+    except Exception:                    # noqa: BLE001
+        return None
+
+
 def run_agent(messages, llm, model, tools, caps, logger, role, clock=None,
-              stop=None):
+              stop=None, finish_on_cap=None, progress=None):
     """Run one bounded tool-loop conversation (spec §1). Returns an AgentResult;
     never raises. `messages` is a pre-assembled list (system + user…); the loop
     appends assistant/tool turns to it in place. With no tools it is a single
@@ -100,11 +112,29 @@ def run_agent(messages, llm, model, tools, caps, logger, role, clock=None,
     `stop()` (optional) is a hard brake checked BEFORE each LLM call: when it
     returns true the loop ends immediately with status `stopped` and the last
     assistant text as the reply — the engineer's spent fix budget uses it to go
-    straight to finish instead of spinning to the turns cap (spec §4)."""
+    straight to finish instead of spinning to the turns cap (spec §4).
+
+    `finish_on_cap` (optional prompt text): when a cap or error ends the loop
+    AFTER at least one tool turn and no final text arrived, that prompt is
+    appended as a user turn and ONE more toolless call is made; its text is the
+    reply, `status` keeps the cap name. Nothing gathered (no turns) or a `stop`
+    earns no extra call (chat-caps spec §2).
+
+    `progress(text)` (optional) hears the model thinking aloud — text riding
+    with tool calls — and each Tool's own start/done notes. It must never break
+    the run: a raising `progress` is swallowed (spec §3)."""
     clock = clock or (lambda: datetime.now(timezone.utc))
     res = AgentResult()
     res.started = clock()
     cost0 = llm.cost_usd
+
+    def ping(text):
+        if progress is None or not (text or "").strip():
+            return
+        try:
+            progress(text.strip())
+        except Exception:                # noqa: BLE001 — a ping never breaks a run
+            pass
 
     # No tools: exactly today's one-shot chat (byte-identical to llm.complete),
     # so the toolless gaffer path does not change behaviour (spec §1/§4).
@@ -151,10 +181,12 @@ def run_agent(messages, llm, model, tools, caps, logger, role, clock=None,
             res.reply = reply.content
             res.status = "ok"
             break
+        ping(reply.content)              # thinking aloud alongside the tool calls
         messages.append(reply.message)
         for call in reply.tool_calls:
             res.tool_calls[call.name] = res.tool_calls.get(call.name, 0) + 1
             tool = table.get(call.name)
+            args = call.arguments or {}
             if tool is None:
                 result = (f"unknown tool {call.name!r}: available tools are "
                           f"{', '.join(sorted(table))}.")
@@ -162,13 +194,33 @@ def run_agent(messages, llm, model, tools, caps, logger, role, clock=None,
                 result = (f"{call.name} cap hit: this tool may be called at most "
                           f"{tool.cap} time(s) per chat; work with what you have.")
             else:
+                if tool.progress is not None:
+                    ping(_note(tool, "start", args, None))
                 try:
-                    result = tool.fn(**(call.arguments or {}))
+                    result = tool.fn(**args)
                 except Exception as e:       # noqa: BLE001 — a tool error is evidence, not a crash
                     result = f"{call.name} failed: {type(e).__name__}: {e}"[:400]
+                if tool.progress is not None:
+                    ping(_note(tool, "done", args, result))
             messages.append({"role": "tool", "tool_call_id": call.id,
                              "content": result if isinstance(result, str) else str(result)})
 
+    if res.status.startswith("cap_hit"):
+        logger.event("agent_cap_hit", role=role, status=res.status, turns=res.turns,
+                     cost_usd=round(llm.cost_usd - cost0, 6))
+    if (finish_on_cap and res.turns > 0 and res.status not in ("ok", "stopped")
+            and not (res.reply or "").strip()):
+        # The safety net (spec §2): one toolless turn to answer from the tool
+        # results already in `messages`. A failure here falls through to the
+        # placeholder line, never up to the caller.
+        messages.append({"role": "user", "content": finish_on_cap})
+        try:
+            final = llm.chat(messages, model=model, role=role)
+            res.turns += 1
+            res.reply = final.content
+        except Exception as e:               # noqa: BLE001
+            logger.event("agent_error", role=role, turns=res.turns, phase="finish",
+                         error=f"{type(e).__name__}: {e}"[:200])
     if not (res.reply or "").strip() and res.status != "ok":
         res.reply = last_content.strip() or _NO_REPLY
     res.cost_usd = llm.cost_usd - cost0

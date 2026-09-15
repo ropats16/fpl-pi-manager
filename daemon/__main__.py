@@ -123,10 +123,12 @@ def _clock_from(now):
     return lambda: now + (datetime.now(timezone.utc) - real_start)
 
 
-# An `ask_helper` runs one seat inside a 6-min chat cap, so its ceilings are far
-# below a standalone helper's (15 min / 40 turns) — spec §2 is a quick question,
-# not a full analyst dig.
-ASK_HELPER_CAPS = {"turns": 10, "minutes": 4, "searches": 3, "fetches": 5}
+# An `ask_helper` runs one seat inside the 60-min chat cap, so its ceilings are
+# below a standalone helper's (15 min / 40 turns) — spec §2 is a narrow question,
+# not a full analyst dig. 12 min / 6 searches / 10 fetches: the 13–14 Sep asks
+# tripped searches=3 and fetches=5 before their minutes, so a longer ask needs
+# the tool ceilings lifted with it (plans/chat-caps-progress-buttons.md §1).
+ASK_HELPER_CAPS = {"turns": 10, "minutes": 12, "searches": 6, "fetches": 10}
 
 
 def build_chat_tools_factory(cfg, env, transport, llm, logger, host=None,

@@ -236,7 +236,7 @@ def build_gaffer_tools(cfg, workspace_root, state_path, reports_dir, projections
             {"type": "object", "properties": {
                 "role": {"type": "string", "enum": list(ASKABLE_ROLES)},
                 "question": {"type": "string"}},
-             "required": ["role", "question"]}, ask_helper, cap=2))
+             "required": ["role", "question"]}, ask_helper, cap=6))
     if reports_dir is not None:
         tools.append(Tool("read_report",
             "Read a staff member's written report for this (or a given) gameweek.",

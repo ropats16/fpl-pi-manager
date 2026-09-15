@@ -118,7 +118,7 @@ class InventoryTest(GafferToolsHarness):
                                       "fpl_lookup", "search", "fetch", "open_ticket",
                                       "ticket_status", "pr_status"})
         caps = {n: t.cap for n, t in tools.items()}
-        self.assertEqual(caps, {"ask_helper": 2, "read_report": 6, "read_projections": 6,
+        self.assertEqual(caps, {"ask_helper": 6, "read_report": 6, "read_projections": 6,
                                 "fpl_lookup": 6, "search": 3, "fetch": 5,
                                 "open_ticket": 1, "ticket_status": 4, "pr_status": 4})
 
