@@ -15,3 +15,9 @@ __pycache__/
 .env
 *.cookie
 secrets/
+
+# browser prototype
+node_modules/
+dist/
+_cacache/
+_update-notifier-last-checked
